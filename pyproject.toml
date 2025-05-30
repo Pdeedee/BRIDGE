@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nepactive"
+version = "0.1"
+description = "Extreme condition MLP"
+authors = [
+    {name = "Liu Zifeng", email = "e1146670434@163.com"}
+]
+keywords = ["keywords relating to your package"]
+dependencies = [
+    "ase",
+    "mattersim",
+    "pynep"
+]
+
+[project.scripts]
+nepactive = "nepactive.main:main"

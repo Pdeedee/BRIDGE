@@ -1,0 +1,2 @@
+[console_scripts]
+nepactive = nepactive.main:main

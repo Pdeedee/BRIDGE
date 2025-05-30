@@ -1,0 +1,25 @@
+tolerance 2.0
+add_box_sides 2.0
+filetype pdb
+output dol.pdb
+
+structure N2.pdb
+  number 24
+  inside box 0. 0. 0.  6.8742 10.5778 10.8097
+end structure
+
+structure CO2.pdb
+  number 12
+  inside box 0. 0. 0.  6.8742 10.5778 10.8097
+end structure
+
+structure H2O.pdb
+  number 12
+  inside box 0. 0. 0.  6.8742 10.5778 10.8097
+end structure
+
+structure CO.pdb
+  number 12
+  inside box 0. 0. 0.  6.8742 10.5778 10.8097
+end structure
+

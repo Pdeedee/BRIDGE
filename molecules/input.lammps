@@ -1,0 +1,65 @@
+variable        FREQ       	equal 25
+variable  	V_SHOCK   	equal 100
+variable        THERMO_FREQ     equal 50
+variable        NSTEPS          equal 5000000
+variable        DUMP            equal 10
+variable        RANDOM          equal 128743
+
+units           metal
+boundary        p p p
+atom_style      atomic
+
+#atom_modify     map array
+read_restart    msst.restart
+#read_data        conf.lmp
+mass            1 1.008000
+mass            2 12.011000
+mass            3 14.007000
+mass            4 15.999000
+
+pair_style      deepmd ../pot/graph.000.pb #../graph.001.pb ../graph.002.pb ../graph.003.pb out_freq 500 out_file model_devi.out
+pair_coeff	* * H C N O
+
+neighbor        1.0 bin
+
+#min_style cg
+#minimize      1.0e-6 1.0e-6 10000 10000
+
+velocity	all create 300 ${RANDOM} #4928459
+timestep 0.0002
+
+dump            dpgen_dump all custom 500    all.lammpstrj id type x y z fx fy fz
+
+## NPT fix
+#fix	npt all nvt temp 300 300 0.1 #iso 1.0 1.0 0.1
+#thermo_style custom step temp press vol ke pe etotal
+#thermo ${THERMO_FREQ}
+#run 20000
+#unfix npt
+#write_restart npt.restart
+
+#reset_timestep 0
+
+# MSST fix
+#timestep 0.0001
+#fix	msst all msst  y ${V_SHOCK} v0 1457.5004 p0 0  e0 -943.13722
+fix myhug all nphug temp 1.0 1.0 0.1 y 400000.0 400000.0 0.1 #v0 1457.5004 p0 0  e0 -943.13722
+fix_modify myhug v0 1457.5004
+fix_modify myhug p0 0  
+fix_modify myhug e0 -943.13722
+
+#fix_modify msst energy no
+#
+#variable dhug equal f_msst[1]
+#variable dray equal f_msst[2]
+#variable lgr_vel equal f_msst[3]
+#variable lgr_pos equal f_msst[4]
+
+thermo_style custom step temp press vol ke pe etotal lx ly lz pxx pyy pzz  
+#thermo_style custom step temp press vol ke pe etotal lx ly lz pxx pyy pzz  &
+# 	     v_dhug v_dray v_lgr_vel v_lgr_pos f_msst
+thermo ${THERMO_FREQ}
+
+#restart 100 msst.restart
+
+run     ${NSTEPS}

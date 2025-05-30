@@ -1,0 +1,7 @@
+sending incremental file list
+src/nepactive/train.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 14,406 bytes  received 1,559 bytes  10,643.33 bytes/sec
+total size is 1,215,007  speedup is 76.10
