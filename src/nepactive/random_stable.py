@@ -25,6 +25,7 @@ class MolecularSolverOptimized:
             'H2O': [0, 2, 1, 0],
             'N2': [0, 0, 0, 2],
             'NH3': [0, 3, 0, 1],
+            # 'O2': [0, 0, 2, 0]
             # 'CHN': [1, 1, 0, 1]
         }
 

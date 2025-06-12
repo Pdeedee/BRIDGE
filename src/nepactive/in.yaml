@@ -1,46 +1,48 @@
-project_name: "HMX"
-yaml_synchro: true
+project_name: "HMX"                                                   # 项目名称，远程提交任务时会命名为该名字
+yaml_synchro: true                                                    # 执行每个record.nep步骤时是否重新同步文件参数
 
-ini_engine: "ase"
+ini_engine: "ase"                                                     # 初始动力学数据集获得方法，目前只支持ase
 # ini_ase_ensemble_files: ["prep/npt.py"]
-python_interpreter: "/workplace/liuzf/miniforge3/envs/dev/bin/python"
-ini_frames: 1500
-ini_train_steps: 10000
-training_ratio: 0.8
-pot_number: 4
-pot_inherit: true
-train_steps: 5000
-pot_file: "/home/liuzf/.local/mattersim/pretrained_models/mattersim-v1.0.0-1M.pth"
-max_temp: 7000
+python_interpreter: "/workplace/liuzf/miniforge3/envs/dev/bin/python" # 执行动力学的时候使用的python解释器
+ini_frames: 1500                                                      # 初始数据集所需要的结构数
+ini_train_steps: 10000                                                # 第一代训练步数
+training_ratio: 0.8                                                   # 训练集比例
+pot_number: 4                                                         # 势函数个数
+pot_inherit: true                                                     # 下一代的训练势函数是否继承上一代的训练结果，否的话会重新训练
+train_steps: 5000                                                     # 每一代势函数的训练步数
+pot_file: "/home/liuzf/.local/mattersim/pretrained_models/mattersim-v1.0.0-1M.pth" # 用来为数据集打标签的mattersim模型
 
-#一定要检查POTCAR的顺序正不正确
-# structure_prefix: "/workplace/liuzf/code/nepactive/example/00.HMX/prep"
-structure_files: ["POSCAR", "init/struc.000/structure/stable.pdb","prep/final.xyz"]
-kpoints_file: "prep/KPOINTS"
-incar_file: "prep/INCAR"
-potcar_file: "prep/POTCAR"
+max_temp: 7000                                                        # 主动学习过程中允许的最大温度 
+
+# 一定要检查POTCAR的顺序正不正确
+# structure_prefix: "/workplace/liuzf/code/nepactive/example/00.HMX/prep" # 结构文件所在的地址前缀，默认为当前目录
+structure_files: ["POSCAR", "init/struc.000/structure/stable.pdb","prep/final.xyz"] # 用来跑动力学的初始结构的地址
+kpoints_file: "prep/KPOINTS" # 远程提交任务的KPOINTS文件
+incar_file: "prep/INCAR"     # 远程提交任务的INCAR文件
+potcar_file: "prep/POTCAR"   # 远程提交任务的POTCAR文件
 
 #model_devi
-uncertainty_threshold: [0.3,1]
-uncertainty_level: 1
-uncertainty_mode: "max"
-energy_threshold: 1
-needed_frames: 10000
+uncertainty_threshold: [0.3,1] # 主动学习过程中选取为候选的结构的uncertainty阈值
+uncertainty_level: 1           # 主动学习过程中选取为候选的uncertainty level计算相对误差所用到的参数
+uncertainty_mode: "max"        # 主动学习过程中选取为候选的uncertainty mode， 有"max","mean"两种模式
+energy_threshold: 1            # 主动学习过程中选取为候选的能量阈值下限，单位为eV
+needed_frames: 10000           # 主动学习过程中，每代所需要的保存结构数
 
-ini_run_steps: 100000
-max_candidate: 1000
-model_devi_time_step: 0.2
-gpu_available: [0,1,2,3]
-task_per_gpu: 1
-time_step: 0.2
-max_run_steps: 1000000
+ini_run_steps: 100000          # 第0代动力学的运行步数
+max_candidate: 1000            # 主动学习过程中每代所需要的候选结构数  
+model_devi_time_step: 0.2      # 主动学习过程中每代的时间步长
+gpu_available: [0,1,2,3]       # 可用的GPU编号
+task_per_gpu: 1                # 每个GPU上运行的任务数
+time_step: 0.2                 # 动力学的时间步长
+max_run_steps: 1000000         # 当步数大于此设置的最大运行步数时且，代数大于等于20代时，程序自动停止
+rho: 1.62                      # 密度，单位为g/cm^3
 model_devi_general:
   -
     # id: "11-24"
-    ensembles: ["nphugo"]
-    structure_id: [[2]]
-    pressure: [20,25,30,35,40,45,50,60]
-    pperiod: 2000
+    ensembles: ["nphugo"]      # 主动学习用来采样的动力学系综，爆速模拟推荐选取"nphugo"
+    structure_id: [[2]]        # 动力学选取的结构文件的编号
+    pressure: [20,25,30,35,40,45,50,60] # 模拟的压力列表，单位为GPa
+    pperiod: 2000              # 模拟的压浴参数设置，单位为步数
     # v0: [2076]
     # e0: [-1360.4]
     # p0: [1]
@@ -54,9 +56,24 @@ model_devi_general:
     pressure: [20,25,30,35,40,45,50,55,60]
 
 
+stable:                        # 用来跑爆速测试与初始数据集部分的设置
+  original_make: true          # 爆速测试的原始make设置
+  structure: "POSCAR"          # 用来跑爆速测试的结构文件名
+  dump_freq: 10                # 用来跑爆速测试的dump频率，单位为步数
+  struc_num: 0                 # 用来跑爆速的初始结构
+  rho: 1.62                    # 爆速测试的密度，单位为g/cm^3
+  pressures: [20,40,60,80]     # 初始数据集的所采取的压力列表
+  gpumd_pressure_list: [20,25,30,35,40,45,50,55,60] # 爆速测试的压力列表
+  task_per_gpu: 1              # 爆速测试每个GPU上运行的任务数 
+  gpu_available: [0,1,2,3]     # 可用的GPU编号
+  python_interpreter: "/workplace/liuzf/miniforge3/envs/dev/bin/python" # stable模块所使用的python解释器
+  steps: 40000                 # 爆速测试的运行步数
+  gpumd_steps: 400000          # 爆速测试的gpumd运行步数 
+  time_step: 0.2               # 爆速测试的时间步长
+  analyze_range: [0.5,1]       # 爆速测试的分析范围
 
 #ssh_machine
-fp_command: "mpirun -np 96 vasp_std"
+fp_command: "mpirun -np 96 vasp_std" 
 ssh_username: "sch9797@BSCC-T6"
 ssh_hostname: "ssh.cn-zhongwei-1.paracloud.com"
 ssh_port: 22
@@ -80,17 +97,3 @@ shock_test_interval: 1
 shock_test_begin_step: 400000
 if_stable_run: true
 
-stable:
-  dump_freq: 10
-  structure: "POSCAR"
-  struc_num: 0
-  rho: 1.62
-  pressures: [20,40,60,80]
-  gpumd_pressure_list: [20,25,30,35,40,45,50,55,60]
-  task_per_gpu: 1
-  gpu_available: [0,1,2,3]
-  python_interpreter: "/workplace/liuzf/miniforge3/envs/dev/bin/python"
-  steps: 40000
-  gpumd_steps: 400000
-  original_make: true
-  analyze_range: [0.5,1]

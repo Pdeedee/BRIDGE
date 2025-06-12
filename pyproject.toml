@@ -11,9 +11,9 @@ authors = [
 ]
 keywords = ["keywords relating to your package"]
 dependencies = [
-    "ase",
+    "ase==3.23.0",
     "mattersim",
-    "pynep"
+    "numpy==1.26.4"
 ]
 
 [project.scripts]

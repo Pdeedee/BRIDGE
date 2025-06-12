@@ -121,6 +121,7 @@ def shock_calculate(volume,pressure,v0,rho):
     plt.xlabel('Relative Volume')
     plt.ylabel('Pressure (GPa)')
     plt.legend()
+    plt.tight_layout()
 
     if slope:
         slope = np.float64(slope)

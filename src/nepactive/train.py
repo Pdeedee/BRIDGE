@@ -9,15 +9,13 @@ from glob import glob
 from ase import Atoms
 import random
 from typing import List,Optional
-from collections import Counter
+# from collections import Counter
 import numpy as np
-import json
 from tqdm import tqdm
-from ase import Atom
 from pynep.calculate import NEP
 from mattersim.forcefield import MatterSimCalculator
 import random
-import yaml
+# import yaml
 from math import ceil,floor
 from torch.cuda import empty_cache
 import itertools
@@ -31,9 +29,9 @@ from nepactive import parse_yaml
 from nepactive.force import force_main
 from nepactive.tools import compute_volume_from_thermo,run_gpumd_task
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from functools import partial
-from collections import defaultdict
+# from concurrent.futures import ProcessPoolExecutor, as_completed
+# from functools import partial
+# from collections import defaultdict
 
 class RestartSignal(Exception):
     def __init__(self, restart_total_time = None):
@@ -190,6 +188,8 @@ class Nepactive(object):
         for index,task_dir in enumerate(task_dirs):
             os.chdir(task_dir)
             if os.path.exists("task_finished"):
+                atoms = read("out.traj", index=-1)
+                write_extxyz("final.xyz", atoms)
                 dlog.warning(f"{task_dir} has already been finished, skip it")
                 continue
             # basename = os.path.basename(file)
@@ -219,6 +219,8 @@ class Nepactive(object):
                 os.chdir(task_dir)
                 ase_plt()
                 os.system(f"touch {task_dir}/task_finished")
+                atoms = read("out.traj", index=-1)
+                write_extxyz("final.xyz", atoms)
                 dlog.info(f"Process completed successfully. Log saved at: {task_dir}/log")
 
         # All scripts executed, proceed to the next step
@@ -477,10 +479,6 @@ class Nepactive(object):
         if self.run_steps > test_begin_step and self.ii%test_interval == 0:
             dlog.info(f"run_steps is {self.run_steps}, will run shock velocity test")
             self.shock_vel_test()
-    
-
-
-        
 
     def post_nep_train(self):
         '''
@@ -493,8 +491,12 @@ class Nepactive(object):
             if nep_plot:
                 os.chdir(f"{self.work_dir}/iter.{self.ii:06d}/00.nep")
                 os.chdir(task)
-                nep_plt()
-                nep_plt(testplt=False)
+                if not os.path.exists("loss.png"):
+                    nep_plt()
+
+        os.chdir(f"{self.work_dir}/iter.{self.ii:06d}/00.nep")
+        # nep_plt(testplt=False)
+        os.system("rm dataset/*xyz */*train.out */*test.out")
 
     def make_nep_train(self):
         '''
@@ -615,6 +617,10 @@ class Nepactive(object):
             v0 = [property[3]]
             e0 = [property[1]]
             p0 = [property[2]]
+            real_p0 = self.idata.get("real_p0",False)
+            if not real_p0:
+                dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
+                p0 = [0]
             rho = self.idata.get("rho", property[0])
             if rho != o_rho:
                 dlog.info(f"rho is {rho}, o_rho is {o_rho}, will scale v0")
@@ -847,8 +853,8 @@ class Nepactive(object):
             'sample_method': self.idata.get("sample_method", "relative"),
             'continue_from_old': self.idata.get("continue_from_old", False),
             'max_candidate': self.idata.get("max_candidate", 1000),
-            'max_temp': self.idata.get("max_temp", 7000),
-            'shortest_d': self.idata.get("shortest_d", 0.6),
+            'max_temp': self.idata.get("max_temp", 10000),
+            'shortest_d': self.idata.get("shortest_d", 0.5),
             'analyze_range': self.idata.get("analyze_range", [0.5, 1.0]),
             'max_run_steps': self.idata.get("max_run_steps", 1200000),
             'max_iter': self.idata.get("max_iter", 20),
@@ -1405,7 +1411,7 @@ class Nepactive(object):
                     dlog.error(f"Process in {task_dir} terminated due to timeout")
         
     @classmethod
-    def relative_force_error(cls, total_time, nep_dir = None, mode:str = "mean", level = 1 ,allowed_shortest_distance = 0.55, allowed_max_temp = 7000):
+    def relative_force_error(cls, total_time, nep_dir = None, mode:str = "mean", level = 1 ,allowed_shortest_distance = 0.5, allowed_max_temp = 10000):
         """
         return frame_index dict for accurate, candidate, failed
         the candidate_index may be more than the needed, need to resample

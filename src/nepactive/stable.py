@@ -67,7 +67,7 @@ class StableRun:
                 with open("ensemble.py","w") as f:
                     f.write(nvt_pyfile)
                 env = os.environ.copy()
-                # env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+
                 with open("log", 'w') as log:
                     process = subprocess.Popen(
                             [python_interpreter, "ensemble.py"], 
@@ -438,6 +438,10 @@ class StableRun:
         dump_freq = gpumd_steps//2500
         dlog.info(f"r_v: {self.r_v}, r_rho: {self.r_rho}, rho0: {self.rho0}, v0: {self.volume}")
         # os.system("rm -rf task.*")
+        real_p0 = self.idata.get("real_p0",False)
+        if not real_p0:
+            dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
+            self.p0 = 0
         for ii,_ in enumerate(self.gpumd_pressure_list):
             os.chdir(work_dir)
             task_dir = os.path.join(work_dir,f"task.{ii:03d}")
