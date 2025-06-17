@@ -352,7 +352,9 @@ class Remotetask:
             clean = self.idata.get('clean', True)
             
             if clean:
-                self.sftp.rmdir(f"{self.remote_root}/{self.tar_fileprefix}")
+                # self.sftp.rmdir(f"{self.remote_root}/{self.tar_fileprefix}")
+                self.block_checkcall(f"rm -rf {self.remote_root}/{self.tar_fileprefix}")
+                dlog.info(f"Clean remote files {self.remote_root}/{self.tar_fileprefix}")
         else:
             raise ValueError("jj must be 3 or 4")
         

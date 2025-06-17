@@ -57,6 +57,7 @@ class StableRun:
             self.energy = property[1]
             self.p0 = property[2]
             self.volume = property[3]
+            self.nat = int(property[4])
             dlog.info(f"find properties.txt, rho: {self.rho0}, energy: {self.energy}, p0: {self.p0}, volume: {self.volume}")
         else:    
             os.makedirs("structure",exist_ok=True)
@@ -83,10 +84,11 @@ class StableRun:
             self.atoms:Atoms = read("out.traj", index = -1)
             self.energy = self.atoms.get_total_energy()
             self.p0 = -self.atoms.get_stress(voigt=False).trace()/3/units.GPa
-            property = [self.rho0,self.energy,self.p0,self.volume]
+            self.nat =  self.atoms.get_number_of_atoms()
+            property = [self.rho0,self.energy,self.p0,self.volume,self.nat]
             os.chdir(self.work_dir)
             # dlog.info(f"properties: {property}")
-            format = "%12.2f "*4
+            format = "%12.2f "*5
             # dlog.info(f"format: {format},array: {np.array(property)}")
             # print(f"properties: {property}")
             np.savetxt("properties.txt",np.array(property).reshape(1, -1),fmt=format,encoding="utf-8")

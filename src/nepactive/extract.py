@@ -290,7 +290,7 @@ def save_unique_molecules_as_pdb(trajectory_file: str, output_dir: str = 'unique
     
     # 遍历轨迹的每一帧
     for frame_idx, atoms in enumerate(traj):
-        print(f"Analyzing frame {frame_idx + 1} of {len(traj)}...")
+        # print(f"Analyzing frame {frame_idx + 1} of {len(traj)}...")
         
         # 基于共价半径为每个原子生成径向截止
         cutoffs = natural_cutoffs(atoms, mult=mult_factor)

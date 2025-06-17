@@ -28,6 +28,7 @@ from nepactive.plt import gpumdplt,nep_plt,ase_plt
 from nepactive import parse_yaml
 from nepactive.force import force_main
 from nepactive.tools import compute_volume_from_thermo,run_gpumd_task
+from nepactive.extract import analyze_trajectory
 import time
 # from concurrent.futures import ProcessPoolExecutor, as_completed
 # from functools import partial
@@ -596,7 +597,7 @@ class Nepactive(object):
         structure_files = [os.path.join(structure_prefix,structure_file) for structure_file in structure_files]
         nep_file = self.idata.get("nep_file","../../00.nep/task.000000/nep.txt")
         needed_frames = self.idata.get("needed_frames",10000)
-        self.run_steps_factor = self.idata.get("run_steps_factor",1.25)
+        self.run_steps_factor = self.idata.get("run_steps_factor",1.5)
         if self.ii == 0:
             run_steps = self.idata.get("ini_run_steps",100000)
             self.run_steps = run_steps
@@ -926,8 +927,9 @@ class Nepactive(object):
             return (frame_prop[:, 1] < config['threshold'][0]) & (frame_prop[:, 2] < config['energy_threshold'])
         
         # 格式化字符串预定义
-        fmt = "%14d %12.2f %12.2f %12.2f %12.2f %12.2f %12.2f %12.2f %12.2f"
-        header = f"{'indices':>14} {'time':^14} {'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14}"
+
+        fmt = "%14d"+"%12.2f"*9+"%12.4f"
+        header = f"{'indices':>14} {'time':^14} {'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'molecule_num':^14} {'molecule_density':^14}"
         
         # 主循环优化
         current_dir = os.getcwd()
@@ -1055,8 +1057,8 @@ class Nepactive(object):
             
             with open(thermo_file, 'a') as f:
                 np.savetxt(f, thermo_data, 
-                        fmt="%24.2f %12.2f %12.2f %12.2f %12.2f %12.2f %12.2f %12.2f %12.2f",
-                        header=f"{'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'P_RMSE':^14} {'P_MAE':^14}",
+                        fmt="%24.2f"+"%14.2f"*6+"%14.4f"*2+"%14.2f"*2,
+                        header=f"{'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'molecule_num':^14} {'molecule_density':^14} {'P_RMSE':^14} {'P_MAE':^14}",
                         comments=f"#iter.{self.ii:06d}")
         
         # 计算和记录比例
@@ -1433,13 +1435,16 @@ class Nepactive(object):
             nep_dir = os.getcwd()
         calculator_fs = glob(f"{nep_dir}/**/nep*.txt")
         atoms_list = read(f"dump.xyz", index = ":")
+        
+
+
         f_lists = force_main(atoms_list, calculator_fs)
         property_list = []
         time_list = np.linspace(0, total_time, len(atoms_list), endpoint=False)/1000
         for ii,atoms in tqdm(enumerate(atoms_list)):
             f_list = [item[ii] for item in f_lists]
-            energy_list = [iterm[1] for iterm in f_list]
-            f_list = [iterm[0] for iterm in f_list]
+            energy_list = [item[1] for item in f_list]
+            f_list = [item[0] for item in f_list]
             f_avg = np.average(f_list,axis=0)
             df_sqr = np.sqrt(np.mean(np.square([(f_list[i] - f_avg) for i in range(len(f_list))]).sum(axis=2),axis=0))
             abs_f_avg = np.mean(np.sqrt(np.square(f_list).sum(axis=2)),axis=0)
@@ -1456,6 +1461,12 @@ class Nepactive(object):
         thermo = np.loadtxt("thermo.out")
         thermo_new = compute_volume_from_thermo(thermo)[:,[0,2,3,-1]]
         frame_property = np.concatenate((property_list_np,thermo_new),axis=1)
+
+        molecule_num = analyze_trajectory("dump.xyz", index=":").sum(axis=1).to_numpy()
+        molecule_density = molecule_num / frame_property[:,7]
+        frame_property = np.hstack((frame_property, molecule_num.reshape(-1, 1)))
+        frame_property = np.hstack((frame_property, molecule_density.reshape(-1, 1)))
+        
         temperatures = thermo[:,0]
         shortest_distances = frame_property[:,3]
         result = np.where(np.logical_or(temperatures > allowed_max_temp, shortest_distances < allowed_shortest_distance))
@@ -1465,8 +1476,8 @@ class Nepactive(object):
         else:
             first_row_index = len(frame_property)  # 如果没有找到任何大于6000的数
 
-        fmt = "%12.2f %12.2f %12.2f %12.2f %12.2f %12.2f %12.2f %12.2f"
-        header = f"{'time':^9} {'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14}"
+        fmt = "%12.2f"*9+"%12.4f"
+        header = f"{'time':^9} {'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'molecile_num':^14} {'molecule_density':^14}"
         np.savetxt("frame_property.txt", frame_property, fmt = fmt, header = header)
         
         if first_row_index != len(frame_property):
