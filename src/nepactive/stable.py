@@ -14,7 +14,7 @@ from ase.io import read,write
 from nepactive.nphugo import MTTK
 from ase.io.trajectory import Trajectory
 from mattersim.forcefield import MatterSimCalculator
-from ase.md import MDLogger
+from nepactive.logger import MDLogger
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.md.nvtberendsen import NVTBerendsen
 from ase.build import make_supercell
@@ -22,8 +22,6 @@ from nepactive.template import nvt_pytemplate,nphugo_pytemplate,nphugo_template,
 from nepactive.plt import ase_plt,gpumdplt
 from nepactive.tools import shock_calculate,run_gpumd_task,compute_volume_from_thermo
 from ase.io.extxyz import write_extxyz
-
-
 
 class StableRun:
     def __init__(self, idata:dict):

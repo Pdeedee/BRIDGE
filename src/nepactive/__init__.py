@@ -1,6 +1,9 @@
+__version__ = "0.0.1"
+
 import logging
 import os
 import yaml
+
 
 ROOT_PATH = __path__[0]
 NAME = "nepactive"

@@ -4,19 +4,15 @@ from nepactive.remote import Remotetask
 import shutil
 import subprocess
 from ase.io import read, write, Trajectory
-from ase.io.extxyz import write_extxyz
 from glob import glob
 from ase import Atoms
 import random
 from typing import List,Optional
-# from collections import Counter
 import numpy as np
 from tqdm import tqdm
-from pynep.calculate import NEP
 from mattersim.forcefield import MatterSimCalculator
 import random
-# import yaml
-from math import ceil,floor
+from math import floor
 from torch.cuda import empty_cache
 import itertools
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +25,7 @@ from nepactive import parse_yaml
 from nepactive.force import force_main
 from nepactive.tools import compute_volume_from_thermo,run_gpumd_task
 from nepactive.extract import analyze_trajectory
+from nepactive.write_extxyz import write_extxyz
 import time
 # from concurrent.futures import ProcessPoolExecutor, as_completed
 # from functools import partial
@@ -112,52 +109,61 @@ class Nepactive(object):
         #init engine choice
         dlog.info(f"Initializing engine and make initial training data using {engine}")
         if not os.path.isfile(record):
+            self.calculate_properties()
             self.make_init_ase_run() 
             dlog.info("Extracting data from initial runs")
             self.make_data_extraction()
         self.make_loop_train()
+
+    def calculate_properties(self):
+        os.makedirs("init",exist_ok=True)
+        if os.path.exists("POSCAR"):
+            shutil.copy("POSCAR","init")
+        work_dir = f"{self.work_dir}/init"
+        os.chdir(work_dir)
+        stable_data:dict = self.idata.get("stable")
+        stable_run = StableRun(stable_data)
+        stable_run.calculate_properties()
+
 
     def make_init_ase_run(self):
         '''
         For the template file, the file name must be fixed form.
         Assumed that the working directory is already the correct directory.
         '''
-        if_stable_run = self.idata.get("if_stable_run",False)
-        os.makedirs("init",exist_ok=True)
-        if os.path.exists("POSCAR"):
-            shutil.copy("POSCAR","init")
+        # if_stable_run = self.idata.get("if_stable_run",False)
+
         work_dir = f"{self.work_dir}/init"
         struc_dirs = []
         os.chdir(work_dir)
-        #生成stablerun的任务，之后一块跑
-        if if_stable_run:
-            rho = self.idata.get("rho", None)
-            stable_data:dict = self.idata.get("stable")
-            if rho:
-                dlog.info(f"rho is {rho}, will run stable run for rho={rho}")
-                stable_data["rho"] = rho
-            stable_run = StableRun(stable_data)
-            stable_run.calculate_properties()
-            for ii in range(stable_run.struc_num):
-                os.chdir(work_dir)
-                os.makedirs(f"struc.{ii:03d}",exist_ok=True)
-                struc_dir = os.path.abspath(f"struc.{ii:03d}")
-                struc_dirs.append(struc_dir)
-                os.chdir(struc_dir)
-                stable_run.make_preparations()
+        # if if_stable_run:
+        rho = self.idata.get("rho", None)
+        stable_data:dict = self.idata.get("stable")
+        if rho:
+            dlog.info(f"rho is {rho}, will run stable run for rho={rho}")
+            stable_data["rho"] = rho
+        stable_run = StableRun(stable_data)
+        # stable_run.calculate_properties()
+        for ii in range(stable_run.struc_num):
+            os.chdir(work_dir)
+            os.makedirs(f"struc.{ii:03d}",exist_ok=True)
+            struc_dir = os.path.abspath(f"struc.{ii:03d}")
+            struc_dirs.append(struc_dir)
+            os.chdir(struc_dir)
+            stable_run.make_preparations()
 
-            # original_make = stable_data.get("original_make",True)
-            # if original_make:
-            if True:
-                os.chdir(work_dir)
-                os.makedirs("original",exist_ok=True)
-                struc_dir = os.path.abspath("original")
-                struc_dirs.append(struc_dir)
-                os.chdir(struc_dir)
-                atoms = read(f"{self.work_dir}/POSCAR")
-                os.makedirs("structure",exist_ok=True)
-                write(f"structure/stable.pdb",atoms)
-                stable_run.make_preparations()
+        # original_make = stable_data.get("original_make",True)
+        # if original_make:
+        if True:
+            os.chdir(work_dir)
+            os.makedirs("original",exist_ok=True)
+            struc_dir = os.path.abspath("original")
+            struc_dirs.append(struc_dir)
+            os.chdir(struc_dir)
+            atoms = read(f"{self.work_dir}/POSCAR")
+            os.makedirs("structure",exist_ok=True)
+            write(f"structure/stable.pdb",atoms)
+            stable_run.make_preparations()
             
         ase_ensemble_files = self.idata.get("ini_ase_ensemble_files")
         if ase_ensemble_files:

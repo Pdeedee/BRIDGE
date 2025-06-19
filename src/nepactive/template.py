@@ -115,7 +115,7 @@ generation    {train_steps}  # default
 nvt_pytemplate = """
 from ase.io import  read,write
 from ase import Atoms,units
-from ase.md import MDLogger
+from nepactive.logger import MDLogger
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.io.trajectory import Trajectory
 import numpy as np
