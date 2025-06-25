@@ -143,6 +143,7 @@ class Nepactive(object):
             dlog.info(f"rho is {rho}, will run stable run for rho={rho}")
             stable_data["rho"] = rho
         stable_run = StableRun(stable_data)
+        stable_run.calculate_properties()
         # stable_run.calculate_properties()
         for ii in range(stable_run.struc_num):
             os.chdir(work_dir)
@@ -150,6 +151,7 @@ class Nepactive(object):
             struc_dir = os.path.abspath(f"struc.{ii:03d}")
             struc_dirs.append(struc_dir)
             os.chdir(struc_dir)
+            
             stable_run.make_preparations()
 
         # original_make = stable_data.get("original_make",True)
@@ -409,6 +411,10 @@ class Nepactive(object):
 
         stable_task = StableRun(stable_data)
         stable_task.run()
+        with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
+            f.write(f"{self.ii}\n")
+            np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
+        dlog.info(f"Shock velocity test completed, results is {stable_task.shock_vels} km/s")
 
     def run_nep_train(self):
         '''
@@ -848,7 +854,7 @@ class Nepactive(object):
     def _get_cached_config(self):
         """一次性获取所有配置，避免重复查询"""
         model_devi = self.get_model_devi()
-        threshold = model_devi.get("uncertainty_threshold") or self.idata.get("tuncertainty_threshold", [0.2, 0.5])
+        threshold = model_devi.get("uncertainty_threshold") or self.idata.get("uncertainty_threshold", [0.3, 1])
         energy_threshold = self.idata.get("energy_threshold", None)
         
         config = {
@@ -1483,7 +1489,7 @@ class Nepactive(object):
             first_row_index = len(frame_property)  # 如果没有找到任何大于6000的数
 
         fmt = "%12.2f"*9+"%12.4f"
-        header = f"{'time':^9} {'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'molecile_num':^14} {'molecule_density':^14}"
+        header = f"{'time':^9} {'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'molecule_num':^14} {'molecule_density':^14}"
         np.savetxt("frame_property.txt", frame_property, fmt = fmt, header = header)
         
         if first_row_index != len(frame_property):

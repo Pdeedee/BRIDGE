@@ -1,0 +1,4 @@
+,filename,num_atoms,composition,integrity
+C1H4,unique_molecules/C1H4.pdb,5,"{'C': 1, 'H': 4}",Valid
+N2,unique_molecules/N2.pdb,2,{'N': 2},Valid
+H3N1,unique_molecules/H3N1.pdb,4,"{'N': 1, 'H': 3}",Valid

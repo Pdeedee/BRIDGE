@@ -1,0 +1,18 @@
+[32m2025-06-21 21:30:45.763[0m | [1mINFO    [0m | [36mmattersim.forcefield.potential[0m:[36mfrom_checkpoint[0m:[36m880[0m - [1mLoading the pre-trained mattersim-v1.0.0-1M.pth model[0m
+/workplace/liuzf/miniforge3/envs/dev/lib/python3.9/site-packages/mattersim/datasets/utils/convertor.py:205: UserWarning: No PBC detected, using a large supercell
+  warnings.warn("No PBC detected, using a large supercell", UserWarning)
+       Step     Time          Energy          fmax
+LBFGS:    0 21:30:49       -9.876768        0.019222
+triclinic:False
+Traceback (most recent call last):
+  File "/workplace/liuzf/code/nepactive/others/test/O2/ensemble.py", line 35, in <module>
+    dyn.run(steps)
+  File "/workplace/liuzf/code/nepactive/src/nepactive/nphugo.py", line 195, in run
+    self.call_observers()
+  File "/workplace/liuzf/miniforge3/envs/dev/lib/python3.9/site-packages/ase/optimize/optimize.py", line 196, in call_observers
+    function(*args, **kwargs)
+  File "/workplace/liuzf/code/nepactive/src/nepactive/logger.py", line 98, in __call__
+    dat += (self.atoms.get_volume(),)
+  File "/workplace/liuzf/miniforge3/envs/dev/lib/python3.9/site-packages/ase/atoms.py", line 1969, in get_volume
+    raise ValueError(
+ValueError: You have 0 lattice vectors: volume not defined

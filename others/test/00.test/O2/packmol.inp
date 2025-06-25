@@ -1,0 +1,11 @@
+
+tolerance 2.0
+add_box_sides 2.0
+filetype pdb
+output packmol.pdb
+
+structure O2.pdb
+  number 1
+  inside box 0. 0. 0. 12.468335858297424 12.468335858297424 12.468335858297424
+end structure
+

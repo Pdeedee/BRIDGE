@@ -1,11 +1,26 @@
 sending incremental file list
+src/nepactive/
+src/nepactive/C1H4.pdb
+src/nepactive/H3N1.pdb
+src/nepactive/N2.pdb
+src/nepactive/OB.py
+src/nepactive/analyze.py
+src/nepactive/extract.py
+src/nepactive/main.py
+src/nepactive/packmol.py
 src/nepactive/stable.py
+src/nepactive/test.ipynb
+src/nepactive/train.py
+src/nepactive/.vscode/launch.json
 src/nepactive/__pycache__/
-src/nepactive/__pycache__/random_stable.cpython-311.pyc
-src/nepactive/__pycache__/remote.cpython-311.pyc
+src/nepactive/__pycache__/OB.cpython-39.pyc
+src/nepactive/__pycache__/extract.cpython-39.pyc
+src/nepactive/__pycache__/main.cpython-39.pyc
+src/nepactive/__pycache__/packmol.cpython-39.pyc
 src/nepactive/__pycache__/stable.cpython-311.pyc
-src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-39.pyc
 src/nepactive/__pycache__/train.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-39.pyc
 
-sent 56,911 bytes  received 2,024 bytes  39,290.00 bytes/sec
-total size is 737,080  speedup is 12.51
+sent 63,890 bytes  received 3,828 bytes  135,436.00 bytes/sec
+total size is 1,411,895  speedup is 20.85

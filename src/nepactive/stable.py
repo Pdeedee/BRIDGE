@@ -86,7 +86,7 @@ class StableRun:
             property = [self.rho0,self.energy,self.p0,self.volume,self.nat]
             os.chdir(self.work_dir)
             # dlog.info(f"properties: {property}")
-            format = "%12.2f "*5
+            format = "%12.3f "*5
             # dlog.info(f"format: {format},array: {np.array(property)}")
             # print(f"properties: {property}")
             np.savetxt("properties.txt",np.array(property).reshape(1, -1),fmt=format,encoding="utf-8")
@@ -340,12 +340,17 @@ class StableRun:
             thermo_average = np.average(thermo,axis=0)
             thermo_averages.append(thermo_average)
         os.chdir(self.work_dir)
-        format = "%12.2f"*4
+        format = "%12.2f"*5
+        thermo_averages = np.array(thermo_averages)
+        rel_volume = thermo_averages[:, 3] / self.r_v
+        thermo_averages = np.hstack((thermo_averages, rel_volume.reshape(-1, 1)))
+
         with open("thermo.txt",'w',encoding="utf-8") as file:
             np.savetxt(file,np.array(thermo_averages),encoding='utf-8',fmt=format,
-                   header=f"Temperature[K]     Pot[eV]     Pressure[GPa]    V[Å^3]")
+                header=f"Temperature[K]     Pot[eV]     Pressure[GPa]    V[Å^3]    relative_volume\n")
         dlog.info("saved thermo.txt")
         dlog.info("post process finished")
+
 
         thermos = np.loadtxt("thermo.txt",encoding="utf-8")
         shock_vels = []
@@ -362,6 +367,7 @@ class StableRun:
             shock_vel = shock_calculate(volume=volume,pressure=pressure,v0=self.r_v, rho=self.r_rho)
             shock_vels.append(shock_vel)
         os.chdir(self.work_dir)
+        self.shock_vels = np.array(shock_vels)
         with open("shock_vel.txt",'w') as file:
             np.savetxt(file,np.array(shock_vels),fmt="%12.2f")
         dlog.info("saved shock_vel.txt")

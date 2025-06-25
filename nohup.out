@@ -310,3 +310,67 @@ src/nepactive/__pycache__/write_extxyz.cpython-311.pyc
 
 sent 2,913 bytes  received 94,232 bytes  194,290.00 bytes/sec
 total size is 1,365,023  speedup is 14.05
+receiving incremental file list
+src/nepactive/train.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/__init__.cpython-39.pyc
+src/nepactive/__pycache__/stable.cpython-39.pyc
+src/nepactive/__pycache__/template.cpython-39.pyc
+src/nepactive/__pycache__/train.cpython-39.pyc
+
+sent 1,487 bytes  received 41,032 bytes  28,346.00 bytes/sec
+total size is 1,365,057  speedup is 32.10
+receiving incremental file list
+src/nepactive/train.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 1,910 bytes  received 42,276 bytes  29,457.33 bytes/sec
+total size is 1,395,177  speedup is 31.58
+receiving incremental file list
+src/nepactive/
+src/nepactive/OB.py
+src/nepactive/test.ipyn
+src/nepactive/test.ipynb
+src/nepactive/train.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/stable.cpython-39.pyc
+src/nepactive/__pycache__/train.cpython-39.pyc
+
+sent 1,904 bytes  received 35,665 bytes  25,046.00 bytes/sec
+total size is 1,398,523  speedup is 37.23
+receiving incremental file list
+src/nepactive/stable.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/stable.cpython-39.pyc
+src/nepactive/__pycache__/train.cpython-39.pyc
+
+sent 896 bytes  received 34,146 bytes  23,361.33 bytes/sec
+total size is 1,398,674  speedup is 39.91
+receiving incremental file list
+src/nepactive/stable.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/stable.cpython-39.pyc
+src/nepactive/__pycache__/train.cpython-39.pyc
+
+sent 896 bytes  received 34,187 bytes  23,388.67 bytes/sec
+total size is 1,398,695  speedup is 39.87
+receiving incremental file list
+src/nepactive/stable.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/stable.cpython-39.pyc
+src/nepactive/__pycache__/train.cpython-39.pyc
+
+sent 896 bytes  received 33,745 bytes  23,094.00 bytes/sec
+total size is 1,398,728  speedup is 40.38
+receiving incremental file list
+src/nepactive/stable.py
+src/nepactive/train.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/stable.cpython-39.pyc
+src/nepactive/__pycache__/train.cpython-39.pyc
+
+sent 1,545 bytes  received 34,162 bytes  23,804.67 bytes/sec
+total size is 1,398,731  speedup is 39.17

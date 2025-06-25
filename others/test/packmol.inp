@@ -1,0 +1,33 @@
+
+tolerance 2.0
+add_box_sides 2.0
+filetype pdb
+output packmol.pdb
+
+
+structure C1H4.pdb
+  number 12
+  inside box 0. 0. 0. 15 15 15
+end structure
+
+
+
+structure H3N1.pdb
+  number 8
+  inside box 0. 0. 0. 15 15 15
+end structure
+
+
+
+structure N2.pdb
+  number 68
+  inside box 0. 0. 0. 15 15 15
+end structure
+
+
+
+structure O2.pdb
+  number 10
+  inside box 0. 0. 0. 15 15 15
+end structure
+

@@ -6,9 +6,11 @@ from typing import List, Dict, Set
 import pandas as pd
 import os
 from scipy.spatial.distance import pdist, squareform
+from tqdm import tqdm
 
-def identify_molecules_in_frame(atoms, mult_factor=0.7) -> List[Dict]:
+def identify_molecules_in_frame(atoms:Atoms, mult_factor=0.7) -> List[Dict]:
     """
+    atoms: ASE Atoms对象,不是轨迹
     识别每一帧中的分子，并返回分子信息和原子索引
     增加了截断半径系数，提高成键检测的敏感性
     """
@@ -389,9 +391,9 @@ def analyze_trajectory(trajectory_file: str, index=":", mult_factor=0.7) -> pd.D
     all_molecule_types = set()
 
     # 遍历轨迹的每一帧
-    for frame_idx, atoms in enumerate(traj):
+    for frame_idx, atoms in tqdm(enumerate(traj)):
         frame_data = defaultdict(int)  # 用于存储该帧的分子计数
-        print(f"Analyzing frame {frame_idx + 1} of {len(traj)}...")
+        # print(f"Analyzing frame {frame_idx + 1} of {len(traj)}...")
 
         # 识别该帧中的分子
         molecules = identify_molecules_in_frame(atoms, mult_factor=mult_factor)
