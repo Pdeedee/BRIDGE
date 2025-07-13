@@ -7,6 +7,7 @@ import pandas as pd
 import os
 from scipy.spatial.distance import pdist, squareform
 from tqdm import tqdm
+from nepactive import dlog
 
 def identify_molecules_in_frame(atoms:Atoms, mult_factor=0.7) -> List[Dict]:
     """
@@ -391,6 +392,7 @@ def analyze_trajectory(trajectory_file: str, index=":", mult_factor=0.7) -> pd.D
     all_molecule_types = set()
 
     # 遍历轨迹的每一帧
+    dlog.info("identifying molecule num")
     for frame_idx, atoms in tqdm(enumerate(traj)):
         frame_data = defaultdict(int)  # 用于存储该帧的分子计数
         # print(f"Analyzing frame {frame_idx + 1} of {len(traj)}...")

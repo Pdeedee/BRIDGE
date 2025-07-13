@@ -3,6 +3,7 @@ from nepactive.train import Nepactive
 from nepactive.remote import Remotetask
 from nepactive.stable import StableRun
 from nepactive.OB import OB
+from nepactive.train_OB import Nepactive_OB
 import logging
 import argparse
 import yaml
@@ -28,7 +29,8 @@ def main():
         task = StableRun(idata=idata.get("stable"))
         task.run()
     elif args.OB:
-        task = OB(idata=idata)
+        # task = OB(idata=idata)
+        task = Nepactive_OB(idata=idata)
         task.run()
     elif args.shock:
         task = Nepactive(idata=idata)

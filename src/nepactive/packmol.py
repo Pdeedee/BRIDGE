@@ -38,6 +38,7 @@ def make_structure(molecules:dict,cell:list,name:str):
     with open("packmol.inp",'w') as file:
         file.write(text)
 
+    print(f"current_dir:{os.getcwd()}")
     os.system("packmol < packmol.inp")
 
     # 读取生成的 packmol.pdb 文件

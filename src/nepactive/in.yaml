@@ -42,7 +42,7 @@ model_devi_general:
     # id: "11-24"
     ensembles: ["nphugo"]      # 主动学习用来采样的动力学系综，爆速模拟推荐选取"nphugo"
     structure_id: [[2]]        # 动力学选取的结构文件的编号
-    pressure: [20,25,30,35,40,45,50,60] # 模拟的压力列表，单位为GPa
+    pressure: [20,35,50,60] # 模拟的压力列表，单位为GPa
     pperiod: 2000              # 模拟的压浴参数设置，单位为步数
     # v0: [2076]
     # e0: [-1360.4]

@@ -55,6 +55,7 @@ class OB(Nepactive):
         N_num = counter.get("N", 0)
         mass_o = atoms.get_masses().sum()
 
+
         O_need = C_num *2 + H_num/2 - O_num
         OB = -O_need * mass_O/mass_o * 100
         dlog.info(f"OB: {OB:.2f} %") 
@@ -80,10 +81,11 @@ class OB(Nepactive):
         nat = nat + O_mgive_r * 2
         fmt = "%12.3f "*5
         prop_list = np.array([rho, e0, p0, v0, nat]).reshape(1, -1)
-        np.savetxt(f"{self.work_dir}/OBfs/properties_OB_{int(O_give_p*100):d}.txt", prop_list, fmt=fmt)
+        np.savetxt(f"{self.work_dir}/init/properties_{self.name}.txt", prop_list, fmt=fmt)
         return rho, e0, p0, v0, nat, O_mgive_r
 
     def make_structure_OB(self, OB_give=10):
+        os.chdir(self.work_dir)
         rho, e0, p0, v0, nat, O_mgive_r = self.calculate_properties_OB(O_give_p=OB_give/100)
         results = analyze_trajectory(f"{self.work_dir}/POSCAR")
         molecule_dict = results.iloc[0].to_dict()
@@ -104,29 +106,22 @@ class OB(Nepactive):
             make_structure(molecule_dict, cell=cell,name=f"{self.name}.pdb")
         atoms = read(f"{self.name}.pdb")
         os.chdir(self.work_dir)
-        os.makedirs(f"00.{self.name}", exist_ok=True)
-        write(f"00.{self.name}/POSCAR",atoms)
-        return rho, e0, p0, v0, nat, O_mgive_r
+        os.makedirs(f"OBfs", exist_ok=True)
+        write(f"OBfs/{self.name}.pdb",atoms)
 
-    def prepare(self):
+    def prepare_OB(self):
         dlog.info("Running OB initialization")
         self.work_dir = self.idata.get("work_dir", os.getcwd())
-
-        OB_give = self.idata.get("OB_give", 10)
-        self.name = f"OB_{OB_give:d}"
-        if not os.path.exists(f"{self.work_dir}/00.OB_{self.name}1/POSCAR"):
-            self.make_structure_OB(OB_give=OB_give)
-
-        os.chdir(f"{self.work_dir}/00.{self.name}")
-
-        os.makedirs("init", exist_ok=True)
-        self.work_dir = os.getcwd()
-        dlog.info(f"Working directory changed to {self.work_dir}")
-        os.chdir("init")
-        os.system(f"cp ../../init/properties_{self.name}.txt properties.txt")
         os.chdir(self.work_dir)
-        os.system(f"ln -snf ../in.yaml .")
 
+        OB_gives = self.idata.get("OB_gives", [10])
+        self.name = f"OB_{OB_give:d}"
+        for OB_give in OB_gives:
+            if not os.path.exists(f"{self.work_dir}/OBfs/{self.name}.pdb"):
+                os.makedirs(f"OBfs",exist_ok=True)
+                self.make_structure_OB(OB_give=OB_give)
+
+        os.chdir(f"{self.work_dir}")
 
     def run(self):
         '''
@@ -138,7 +133,7 @@ class OB(Nepactive):
         training_ratio: the ratio of training data to total data
         '''
         #change working directory
-        self.prepare()
+        self.prepare_OB()
         engine = self.idata.get("ini_engine","ase")
         # label_engine = idata.get("label_engine","mattersim")
         work_dir = self.work_dir

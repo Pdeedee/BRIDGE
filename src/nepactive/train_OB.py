@@ -18,7 +18,7 @@ import itertools
 from concurrent.futures import ThreadPoolExecutor
 import re
 import copy
-from nepactive.stable import StableRun
+from nepactive.stable_OB import StableRun_OB
 from nepactive.template import npt_template,nphugo_template,nvt_template,msst_template,model_devi_template,nep_in_template,nphugo_pytemplate,nvt_pytemplate,continue_pytemplate
 from nepactive.plt import gpumdplt,nep_plt,ase_plt
 from nepactive import parse_yaml
@@ -27,11 +27,105 @@ from nepactive.tools import compute_volume_from_thermo,run_gpumd_task
 from nepactive.extract import analyze_trajectory
 from nepactive.write_extxyz import write_extxyz
 import time
-import pandas as pd
-from nepactive.tools import get_shortest_distance
-# from concurrent.futures import ProcessPoolExecutor, as_completed
-# from functools import partial
-# from collections import defaultdict
+from ase import units
+from collections import Counter
+from nepactive.extract import analyze_trajectory, save_unique_molecules_as_pdb
+from nepactive.packmol import make_structure
+from ase.data import atomic_masses
+from ase.data import atomic_numbers
+from math import ceil
+from nepactive.train import Nepactive
+
+def calculate_properties_OB(work_dir, idata, OB_give=10):
+    if not os.path.exists(f"{work_dir}/init/properties.txt"):
+        calculate_properties(work_dir, idata)
+    prop = np.loadtxt(f"{work_dir}/init/properties.txt")
+    atoms = read(f"{work_dir}/POSCAR")
+    atom_list = atoms.get_chemical_symbols()
+    counter = Counter(atom_list)
+    C_num = counter.get("C", 0)
+    O_num = counter.get("O", 0)
+    H_num = counter.get("H", 0)
+    N_num = counter.get("N", 0)
+    mass_o = atoms.get_masses().sum()
+
+    O_give_p = OB_give/100
+    O_need = C_num *2 + H_num/2 - O_num
+    OB = -O_need * mass_O/mass_o * 100
+    dlog.info(f"OB: {OB:.2f} %") 
+    # OB_give = self.idata.get("O_give_p", 0.1)
+
+    O_mgive = mass_o * O_give_p / mass_O /2
+    O_mgive_r = ceil(O_mgive)
+    mass = mass_o + O_mgive_r * mass_O * 2
+
+    O_give_p_r = O_mgive_r * mass_O * 2 / mass_o
+    dlog.info(f"really oxygen give portion : {O_give_p_r*100:.2f} %")
+
+    nat = len(atoms)
+    
+    Epot_mO2 = -9.876768
+
+    rho = prop[0] 
+
+    e0 = prop[1] + 3/2 * O_mgive_r * 2 * units.kB * 300 + O_mgive_r * Epot_mO2
+    p0 = 0
+    v0 = mass / (rho * units.kg / units.m**3) /1000
+
+    nat = nat + O_mgive_r * 2
+    fmt = "%12.3f " * 5
+    prop_list = np.array([rho, e0, p0, v0, nat]).reshape(1, -1)
+    os.makedirs(f"{work_dir}/OBfs",exist_ok=True)
+    if not os.path.exists(f"{work_dir}/OBfs/properties_OB_{int(O_give_p*100):d}.txt"):
+        np.savetxt(f"{work_dir}/OBfs/properties_OB_{int(O_give_p*100):d}.txt", prop_list, fmt=fmt)
+        dlog.info(f"save properties at {work_dir}/OBfs/properties_OB_{int(O_give_p*100):d}.txt")
+    return rho, e0, p0, v0, nat, O_mgive_r
+
+def make_structure_OB(work_dir, idata, OB_give=10):
+    os.chdir(work_dir)
+    rho, e0, p0, v0, nat, O_mgive_r = calculate_properties_OB(work_dir=work_dir, idata=idata, OB_give=OB_give)
+    os.makedirs("OBfs",exist_ok=True)
+    os.chdir("OBfs")
+    results = analyze_trajectory(f"{work_dir}/POSCAR")
+    molecule_dict = results.iloc[0].to_dict()
+    save_unique_molecules_as_pdb(f"{work_dir}/POSCAR")
+    os.system("cp unique_molecules/*pdb .")
+
+    cell_length = np.power(v0, 1/3)*1.2
+    cell = [cell_length, cell_length, cell_length]
+    molecule_dict['O2'] = O_mgive_r
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(os.path.dirname(current_dir))
+    source_file = os.path.join(parent_dir, 'molecules')
+
+    name= f"OB_{int(OB_give)}"
+
+    if not os.path.isfile(f"{name}.pdb"):
+        os.system(f"cp {source_file}/*pdb .")
+        dlog.info(f"make structure for {molecule_dict}")
+        make_structure(molecule_dict, cell=cell,name=f"{name}.pdb")
+
+    atoms = read(f"{name}.pdb")
+    os.chdir(work_dir)
+
+    return rho, e0, p0, v0, nat, O_mgive_r
+
+def calculate_properties(work_dir:str = None, idata:dict = None):
+    os.chdir(work_dir)
+    os.makedirs("init",exist_ok=True)
+    if os.path.exists("POSCAR"):
+        shutil.copy("POSCAR","init")
+    work_dir = f"{work_dir}/init"
+    os.chdir(work_dir)
+    stable_data:dict = idata.get("stable")
+    stable_run = StableRun_OB(stable_data)
+    stable_run.calculate_properties()
+
+mass_H = atomic_masses[atomic_numbers['H']]  # 氢
+mass_C = atomic_masses[atomic_numbers['C']]  # 碳
+mass_N = atomic_masses[atomic_numbers['N']]  # 氮
+mass_O = atomic_masses[atomic_numbers['O']]  # 氧
 
 class RestartSignal(Exception):
     def __init__(self, restart_total_time = None):
@@ -51,6 +145,14 @@ def process_id(value):
         return list(range(start, end + 1))  # 返回范围的数字列表
     # 如果不匹配数字或范围格式，抛出异常
     raise ValueError(f"无效的格式: {value}，必须是数字或者数字范围（如 '3-11'）")
+
+def get_shortest_distance(atoms:Atoms,atom_index=None):
+    distance_matrix = atoms.get_all_distances(mic=True)
+    np.fill_diagonal(distance_matrix, np.inf)
+    min_index = np.unravel_index(np.argmin(distance_matrix), distance_matrix.shape)
+    if atom_index is not None:
+        atom_index.append(min_index)
+    return np.min(distance_matrix)
 
 def traj_write(atoms_list:Atoms, calculator):
     traj = Trajectory("out.traj", "w")
@@ -76,7 +178,7 @@ def record_iter(record, ii, jj):
     with open(record, "a") as frec:
         frec.write("%d %d\n" % (ii, jj))
 
-class Nepactive(object):
+class Nepactive_OB(Nepactive):
     def __init__(self,idata:dict):
         self.idata:dict = idata
         self.work_dir = os.getcwd()
@@ -103,23 +205,11 @@ class Nepactive(object):
         #init engine choice
         dlog.info(f"Initializing engine and make initial training data using {engine}")
         if not os.path.isfile(record):
-            self.calculate_properties()
+            calculate_properties(self.work_dir, self.idata)
             self.make_init_ase_run() 
             dlog.info("Extracting data from initial runs")
             self.make_data_extraction()
         self.make_loop_train()
-
-    def calculate_properties(self):
-        os.chdir(self.work_dir)
-        os.makedirs("init",exist_ok=True)
-        if os.path.exists("POSCAR"):
-            shutil.copy("POSCAR","init")
-        work_dir = f"{self.work_dir}/init"
-        os.chdir(work_dir)
-        stable_data:dict = self.idata.get("stable")
-        stable_run = StableRun(stable_data)
-        stable_run.calculate_properties()
-
 
     def make_init_ase_run(self):
         '''
@@ -134,11 +224,13 @@ class Nepactive(object):
         # if if_stable_run:
         rho = self.idata.get("rho", None)
         stable_data:dict = self.idata.get("stable")
+        stable_data["steps"] = self.idata.get("ini_traj_steps", 40000)
         if rho:
             dlog.info(f"rho is {rho}, will run stable run for rho={rho}")
             stable_data["rho"] = rho
-        stable_run = StableRun(stable_data)
+        stable_run = StableRun_OB(stable_data)
         stable_run.calculate_properties()
+        
         # stable_run.calculate_properties()
         for ii in range(stable_run.struc_num):
             os.chdir(work_dir)
@@ -161,6 +253,21 @@ class Nepactive(object):
             os.makedirs("structure",exist_ok=True)
             write(f"structure/stable.pdb",atoms)
             stable_run.make_preparations()
+
+        OB_gives = self.idata.get("OB_gives", [])
+
+        if OB_gives:
+            os.chdir(self.work_dir)
+            rho,e0,p0,v0,nat,_ = make_structure_OB(work_dir=self.work_dir,idata=self.idata,OB_give=OB_gives[-1])
+            os.chdir(f"{work_dir}")
+            os.makedirs("OB",exist_ok=True)
+            os.chdir("OB")
+            os.system(f"ln {self.work_dir}/OBfs/properties_OB_{OB_gives[-1]}.txt properties.txt -snf")
+            atoms = read(f"{self.work_dir}/OBfs/OB_{OB_gives[-1]}.pdb")
+            os.makedirs("structure", exist_ok=True)
+            write("structure/stable.pdb", atoms)
+            stable_run.make_preparations()
+            
             
         ase_ensemble_files = self.idata.get("ini_ase_ensemble_files")
         if ase_ensemble_files:
@@ -352,9 +459,7 @@ class Nepactive(object):
     def shock(self):
         
         stable_data = self.idata.get("stable", None)
-        rhos = self.idata.get("rhos", None)
-        if rhos is None:
-            rhos = stable_data.get("rhos", [1.0, 1.2, 1.4, 1.6, 1.8, 2.0])
+        rhos = stable_data.get("rhos", [1.0, 1.2, 1.4, 1.6, 1.8, 2.0])
         if stable_data is None:
             raise ValueError("stable data is None, please check your in.yaml")
         
@@ -374,7 +479,7 @@ class Nepactive(object):
             dlog.info(f"Running shock velocity test for rho={rho}")
             os.system(f"ln -snf {self.work_dir}/POSCAR POSCAR")
             os.system(f"ln -snf {self.work_dir}/properties.txt properties.txt")
-            stable_task = StableRun(stable_data)
+            stable_task = StableRun_OB(stable_data)
             stable_task.run()
             dlog.info(f"Shock velocity test for rho={rho} completed")
 
@@ -391,27 +496,41 @@ class Nepactive(object):
         nep_file = os.path.join(self.iter_dir, "00.nep/task.000000/nep.txt")
         stable_data["nep"] = nep_file
         stable_data["pot"] = "nep"
+
         original_make = stable_data.get("original_make", False)
-        if original_make:
-            structure_files = [os.path.abspath(self.idata.get("structure_files")[0])]
-        else:
-            structure_files = []
         final_xyzs = glob(f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd/task.[0-9][0-9][0-9][0-9][0-9][0-9]/final.xyz")
         final_xyzs.sort()
+
+        if original_make:
+            structure_files = [final_xyzs[len(self.idata.get("model_devi_general",{}).get("pressure"))-1]]
+        else:
+            structure_files = []
+
         final_xyz = final_xyzs[-1]
-        structure_files.append(final_xyz)
-        stable_data["structure_files"] = structure_files
+        
         rho = self.idata.get("rho", None)
         if rho:
             dlog.info(f"rho is {rho}, will run shock velocity test for rho={rho}")
             stable_data["rho"] = rho
+        structure_files.append(final_xyz)
 
-        stable_task = StableRun(stable_data)
-        stable_task.run()
-        with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
-            f.write(f"{self.ii}\n")
-            np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
+        for ii, struc in enumerate(structure_files):
+            os.makedirs(f"job.{ii:03d}",exist_ok=True)
+            os.chdir(f"job.{ii:03d}")
+            os.system(f"ln {os.path.dirname(struc)}/properties*.txt properties.txt -snf")
+            dlog.info(f"start running {ii}th task of {len(struc)}")
+            atoms = read(struc)
+            write("POSCAR", atoms)
+            stable_task = StableRun_OB(stable_data)
+            stable_data["structure_files"] = [struc]
+            stable_task.run()
+            with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
+                f.write(f"{self.ii}\n")
+                np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
+            os.chdir(f"{work_dir}")
         dlog.info(f"Shock velocity test completed, results is {stable_task.shock_vels} km/s")
+
+
 
     def run_nep_train(self):
         '''
@@ -562,201 +681,164 @@ class Nepactive(object):
         merge_files(testfiles, "dataset/test.xyz")
         self.gpu_available = self.idata.get("gpu_available")
 
-
-
-        # work_dir = os.path.abspath(f"{work_dir}/task.{ii:06d}")
+    def _setup_parameters_make_gpumd(self, model_devi):
+        """设置NPHUGO任务的所有参数"""
+        # 基本参数
+        work_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
+        structure_files = self.idata.get("structure_files")
+        structure_prefix = self.idata.get("structure_prefix", self.work_dir)
+        structure_files = [os.path.join(structure_prefix, sf) for sf in structure_files]
+        
+        # 计算运行步数
+        self.run_steps_factor = self.idata.get("run_steps_factor", 1.5)
+        if self.ii == 0:
+            run_steps = self.idata.get("ini_run_steps", 100000)
+        else:
+            all_run_steps = np.loadtxt(f"{self.work_dir}/steps.txt", ndmin=1, encoding="utf-8")
+            old_run_steps = all_run_steps[-1]
+            run_steps = int(self.run_steps_factor * int(old_run_steps))
+            
+            if len(all_run_steps) > 1 and all_run_steps[-2] > all_run_steps[-1]:
+                dlog.warning(f"The older run_steps is {old_run_steps}, the new run_steps is {all_run_steps[-1]}, and the older one is bigger")
+        
+        self.run_steps = run_steps
+        dlog.info(f"run_steps is {run_steps}")
+        
+        return {
+            'work_dir': work_dir,
+            'structure_files': structure_files,
+            'nep_file': self.idata.get("nep_file", "../../00.nep/task.000000/nep.txt"),
+            'needed_frames': self.idata.get("needed_frames", 10000),
+            'time_step_general': self.idata.get("model_devi_time_step", None),
+            'OB_gives': self.idata.get("OB_gives", [0]),
+            'pperiod': model_devi.get("pperiod", 2000),
+            'run_steps': run_steps
+        }
 
     def make_model_devi(self):
-        '''
-        run gpumd, this function is referenced by make_loop_train
-        '''
-
+        """运行gpumd，这个函数被make_loop_train调用"""
         model_devi = self.get_model_devi()
 
+        # 备份处理
         if self.make_gpumd_task_first:
-            # 日志记录
             dlog.info(f"make_gpumd_task_first is true, will backup old task directory {self.work_dir}/iter.{self.ii:06d}/01.gpumd")
-
-            # 查找已有的备份文件夹
-            bak_files = glob(f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd.bak.*")
-            if bak_files:
-                # 提取最大后缀数字
-                suffixes = [int(os.path.basename(f).split('.')[-1]) for f in bak_files]
-                new_suffix = max(suffixes) + 1
-            else:
-                # 如果没有备份文件夹，默认后缀为 0
-                new_suffix = 0
-
-            # 构造新备份路径
+            
             src_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
-            dst_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd.bak.{new_suffix}"
-
-            # 重命名文件夹
             if os.path.exists(src_dir):
+                # 找到下一个备份后缀
+                bak_files = glob(f"{src_dir}.bak.*")
+                new_suffix = 0 if not bak_files else max([int(f.split('.')[-1]) for f in bak_files]) + 1
+                
+                dst_dir = f"{src_dir}.bak.{new_suffix}"
                 shutil.move(src_dir, dst_dir)
                 dlog.info(f"Backup completed: {src_dir} -> {dst_dir}")
             else:
                 dlog.warning(f"Source directory does not exist: {src_dir}")
 
+        # 设置参数
+        params = self._setup_parameters_make_gpumd(model_devi)
 
-        work_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
-        structure_files:list = self.idata.get("structure_files")
-        structure_prefix = self.idata.get("structure_prefix",self.work_dir)
-        time_step_general = self.idata.get("model_devi_time_step", None)
-        structure_files = [os.path.join(structure_prefix,structure_file) for structure_file in structure_files]
-        nep_file = self.idata.get("nep_file","../../00.nep/task.000000/nep.txt")
-        needed_frames = self.idata.get("needed_frames",10000)
-        self.run_steps_factor = self.idata.get("run_steps_factor",1.5)
-        if self.ii == 0:
-            run_steps = self.idata.get("ini_run_steps",100000)
-            self.run_steps = run_steps
-        else:
-            all_run_steps = np.loadtxt(f"{self.work_dir}/steps.txt",ndmin=1,encoding="utf-8")
-            old_run_steps = all_run_steps[-1]
-            run_steps = int(self.run_steps_factor*int(old_run_steps))
-            if len(all_run_steps) > 1:
-                if all_run_steps[-2] > all_run_steps[-1]:
-                    dlog.warning(f"The older run_steps is {old_run_steps}, the new run_steps is {all_run_steps[-1]},and the older one is bigger")
-            self.run_steps = run_steps
-            dlog.info(f"run_steps is {run_steps}")
-        # if self.run_steps < 10000:
+        # 生成任务
+        self.total_time, self.model_devi_task_numbers = self.make_gpumd_task(model_devi, **params)
 
-        if os.path.exists(f"{self.work_dir}/init/properties.txt"):
-            property = np.loadtxt(f"{self.work_dir}/init/properties.txt",encoding="utf-8")
-            o_rho = property[0]
-            v0 = [property[3]]
-            e0 = [property[1]]
-            p0 = [property[2]]
-            real_p0 = self.idata.get("real_p0",False)
-            if not real_p0:
-                dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
-                p0 = [0]
-            rho = self.idata.get("rho", property[0])
-            if rho != o_rho:
-                dlog.info(f"rho is {rho}, o_rho is {o_rho}, will scale v0")
-                v0 = [property[3] * o_rho / rho]  # scale v0 according to rho
-        else:
-            e0 = [0]
-            p0 = [0]
-            v0 = [0]
-
-        pperiod = model_devi.get("pperiod", 2000)
-        self.total_time, self.model_devi_task_numbers = Nepactive.make_gpumd_task(model_devi=model_devi, structure_files=structure_files, needed_frames=needed_frames,time_step_general=time_step_general,
-                                                                                   work_dir=work_dir,nep_file=nep_file, run_steps=run_steps,e0=e0, p0=p0,v0 =v0, pperiod=pperiod)
-
-    @classmethod
-    def make_gpumd_task(cls, model_devi:dict, structure_files, needed_frames=10000, time_step_general=0.2, work_dir:str=None, 
-                        nep_file:str=None, run_steps:int=20000, e0=[0], p0=[0], v0=[0],pperiod = 1000):
+    def make_gpumd_task(self, model_devi: dict, structure_files, needed_frames=10000, 
+                    time_step_general=0.2, work_dir: str = None, nep_file: str = None, 
+                    run_steps: int = 20000, OB_gives=[0], pperiod=1000):
+        """生成NPHUGO系综的GPUMD任务"""
         if not work_dir:
             work_dir = os.getcwd()
-        if not nep_file:
-            nep_file = f"{work_dir}/nep.txt"
+        
+        assert run_steps > 20000, "NPHUGO ensemble requires run_steps > 20000"
 
+        # 获取NPHUGO参数
+        structure_id = model_devi.get("structure_id", [[0]])[0]  # 默认使用第一个结构
+        structure = [structure_files[ii] for ii in structure_id]
+        
 
-        if not (e0 and p0 and v0):
-            e0 = model_devi.get("e0",None)
-            p0 = model_devi.get("p0",None)
-            v0 = model_devi.get("v0",None)
+        pressure = model_devi.get("pressure")
 
-        assert e0 and p0 and v0, "e0, p0, v0 are not empty set"
-
+        assert pressure is not None, "NPHUGO ensemble requires pressure"
+        
+        # 构建参数字典
+        all_dict = {
+            "OB_gives": OB_gives,
+            "structure": structure,
+            "pressure": pressure,
+            "pperiod": [pperiod]
+        }
+        
+        # 验证参数
+        assert all(v not in [None, '', [], {}, set()] for v in all_dict.values()), "Empty parameters in NPHUGO"
+        
+        # 生成参数组合
         task_dicts = []
-        ensembles = model_devi.get("ensembles")
-        for ensemble_index,ensemble in enumerate(ensembles):
-            structure_id = model_devi.get("structure_id")[ensemble_index]
-            all_dict = {}
-            assert structure_files is not None
-            structure = [structure_files[ii] for ii in structure_id] #####################################################
-            all_dict["structure"] = structure
-            time_step = model_devi.get("time_step")
+        for combo in itertools.product(*all_dict.values()):
+            combo_dict = {key: combo[index] for index, key in enumerate(all_dict.keys())}
+            task_dicts.append(combo_dict)
+        
+        dlog.info(f"NPHUGO generated {len(task_dicts)} tasks")
 
-            if not time_step:
-                time_step = time_step_general
+        # 计算dump频率和其他参数
+        frames_per_task = needed_frames / len(task_dicts)
+        dump_freq = max(1, floor(run_steps / frames_per_task))
+        time_step = model_devi.get("time_step", time_step_general)
+        replicate_cell = model_devi.get("replicate_cell", "1 1 1")
+        model_devi_task_numbers = len(task_dicts)
 
-            assert all([structure,time_step,run_steps]), "有变量为空"
-            # task_dict = {}
-            all_dict["pperiod"] = [pperiod]
-            if ensemble in ["nvt", "npt", "nphugo"]:
-                temperature = model_devi.get("temperature") #
-                if ensemble in ["npt", "nvt"]:
-                    assert temperature is not None
-                    all_dict["temperature"] = temperature
-                if ensemble in ["npt", "nphugo"]:
-                    pressure = model_devi.get("pressure") #
-                    all_dict["pressure"] = pressure
-                    assert pressure is not None
-                if ensemble == "nphugo":
-                    all_dict["e0"] = e0
-                    all_dict["p0"] = p0
-                    all_dict["v0"] = v0
-            elif ensemble == "msst":
-                v_shock:list = model_devi.get("v_shock",[9.0])       #
-                qmass:list = model_devi.get("qmass",[100000])           #
-                viscosity:list = model_devi.get("viscosity",[10])   #
-                shock_direction = model_devi.get("shock_direction","x")
-                all_dict["v_shock"] = v_shock
-                all_dict["qmass"] = qmass
-                all_dict["viscosity"] = viscosity
-                all_dict["shock_direction"] = shock_direction
-            else:
-                raise NotImplementedError
-            dlog.info(f"all_dict:{all_dict}")
-            assert all(v not in [None, '', [], {}, set()] for v in all_dict.values())
-            # task_para = []
-            # combo_numbers = 0
-            for combo in itertools.product(*all_dict.values()):
-                # 将每一组合生成字典，字典的键是列表的变量名，值是组合中的对应元素
-                combo_dict = {keys: combo[index] for index, keys in enumerate(all_dict.keys())}
-                task_dicts.append((ensemble,combo_dict))
-            dlog.info(f"{all_dict.keys()} generate {len(task_dicts)} tasks")
-            frames_pertask = needed_frames/len(task_dicts)
-            dump_freq = max(1,floor(run_steps/frames_pertask))
-
-            model_devi_task_numbers = len(task_dicts)
-            replicate_cell = model_devi.get("replicate_cell","1 1 1")
-            # nep_file = self.idata.get("nep_file","../../00.nep/task.000000/nep.txt")
-
-        index = 0
-        for ensemble,task in task_dicts:
-            if ensemble == "msst":
-                assert run_steps > 20000
-                text = msst_template.format(time_step = time_step,run_steps = run_steps-20000,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
-            elif ensemble == "nvt":
-                text = nvt_template.format(time_step = time_step,run_steps = run_steps,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
-            elif ensemble == "npt":
-                text = npt_template.format(time_step = time_step,run_steps = run_steps,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
-            elif ensemble == "nphugo":
-                assert run_steps > 20000
-                text = nphugo_template.format(
-                    time_step = time_step,
-                    run_steps = run_steps-20000,
-                    dump_freq = dump_freq,
-                    replicate_cell = replicate_cell,
-                    **task
-                )
-                # dlog.info(f"nphugo task:{task},npugo text:{text}")
-            else:
-                raise NotImplementedError(f"The ensemble {ensemble} is not supported")
+        # 创建任务文件
+        for index, task in enumerate(task_dicts):
             task_dir = f"{work_dir}/task.{index:06d}"
-            file = f"{task_dir}/run.in"
-            os.makedirs(task_dir,exist_ok=True)
+            os.makedirs(task_dir, exist_ok=True)
+            
+            # 生成NPHUGO输入文件
+            OB_gives_val = task.get("OB_gives", 0)
+            dlog.error(f"{self.work_dir}")
+            rho, e0, p0, v0, nat, _ = make_structure_OB(work_dir=self.work_dir, idata=self.idata, OB_give=OB_gives_val)
+            
+            # 计算修正体积
+            r_rho = self.idata.get("rho", None)
+            r_v = rho * v0 / r_rho if r_rho is not None else v0
+
+            # 保存属性文件
+            fmt = "%12.3f " * 5
+            prop_list = np.array([rho, e0, p0, v0, nat]).reshape(1, -1)
+            np.savetxt(f"{task_dir}/properties_OB_{OB_gives_val}.txt", prop_list, fmt=fmt)
+            
+            # 处理初始压力
+            real_p0 = self.idata.get("real_p0", False)
+            if not real_p0:
+                dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
+                p0 = 0
+                
+            text = nphugo_template.format(
+                time_step=time_step,
+                run_steps=run_steps-20000,
+                dump_freq=dump_freq,
+                replicate_cell=replicate_cell,
+                e0=e0, p0=p0, v0=r_v,
+                **task
+            )
+
+            # 设置任务环境
             os.chdir(task_dir)
-            structure:str = task["structure"]
-            if not structure.endswith("xyz"):
-                atom = read(structure)
-                atom = write("POSCAR",atom)
-                atom = read("POSCAR")
-                write_extxyz(f"model.xyz",atom)####################
-            else:
-                shutil.copy(structure,f"model.xyz")
-            with open(file,mode='w') as f:
+            structure = task["structure"]
+            
+            # 处理OB结构
+            if OB_gives_val != 0:
+                structure = f"{self.work_dir}/OBfs/OB_{OB_gives_val:d}.pdb"
+                
+            atoms = read(structure)
+            write_extxyz("model.xyz", atoms)
+            
+            # 写入输入文件
+            with open("run.in", 'w') as f:
                 f.write(text)
+                
+            # 创建NEP文件链接
             if not os.path.isfile("nep.txt"):
                 os.symlink(nep_file, "nep.txt")
-            index += 1
-        total_time = run_steps*time_step
 
-        # dlog.info("generate gpumd task done")
+        total_time = run_steps * time_step
         return total_time, model_devi_task_numbers
 
     def run_model_devi(self):
@@ -774,7 +856,7 @@ class Nepactive(object):
         gpu_available = self.idata.get("gpu_available")
         self.task_per_gpu = self.idata.get("task_per_gpu")
 
-        Nepactive.run_gpumd_task(work_dir=model_devi_dir, gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)
+        Nepactive_OB.run_gpumd_task(work_dir=model_devi_dir, gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)
         # self.write_steps()
 
     @classmethod
@@ -804,8 +886,6 @@ class Nepactive(object):
         model_devi = model_devi_general[self.model_devi_general_id] 
 
         return model_devi
-
-
 
     def post_gpumd_run(self):
         '''
@@ -953,7 +1033,7 @@ class Nepactive(object):
                 dlog.info(f"processing task {ii}")
                 
                 # 核心计算（这部分您说很快）
-                atoms_list, frame_property, failed_row_index = Nepactive.relative_force_error(
+                atoms_list, frame_property, failed_row_index = Nepactive_OB.relative_force_error(
                     total_time=self.total_time, 
                     nep_dir=nep_dir, 
                     mode=config['mode'],
@@ -1022,6 +1102,10 @@ class Nepactive(object):
                     # 保存候选数据
                     np.savetxt(f"candidate_{ii}.txt", final_data, fmt=fmt, header=header, comments=f"_{ii}_")
                     
+                # except Exception as e:
+                #     dlog.error(f"Error in task {ii}: {e}")
+                #     raise RuntimeError(f"Task {ii} failed with error: {e}")
+                # finally:
                     os.chdir(current_dir)
         
         return results
@@ -1262,8 +1346,6 @@ class Nepactive(object):
         calculator_fs = glob(f"{nep_dir}/**/nep*.txt")
         atoms_list = read(f"dump.xyz", index = ":")
         
-
-
         f_lists = force_main(atoms_list, calculator_fs)
         property_list = []
         time_list = np.linspace(0, total_time, len(atoms_list), endpoint=False)/1000
@@ -1288,13 +1370,11 @@ class Nepactive(object):
         thermo_new = compute_volume_from_thermo(thermo)[:,[0,2,3,-1]]
         frame_property = np.concatenate((property_list_np,thermo_new),axis=1)
 
-        molecule_data = analyze_trajectory("dump.xyz", index=":")
-        molecule_num = molecule_data.sum(axis=1).to_numpy()
+        molecule_num = analyze_trajectory("dump.xyz", index=":").sum(axis=1).to_numpy()
         molecule_density = molecule_num / frame_property[:,7]
         frame_property = np.hstack((frame_property, molecule_num.reshape(-1, 1)))
         frame_property = np.hstack((frame_property, molecule_density.reshape(-1, 1)))
-        molecule_data.iloc[-1].to_csv("molecule_data.csv", index=False)
-
+        
         temperatures = thermo[:,0]
         shortest_distances = frame_property[:,3]
         result = np.where(np.logical_or(temperatures > allowed_max_temp, shortest_distances < allowed_shortest_distance))
@@ -1338,7 +1418,7 @@ class Nepactive(object):
         atoms_list = read("candidate.xyz", index=":", format="extxyz")
         self.pot_file = self.idata.get("pot_file")
         # 创建MatterSimCalculator对象，用于计算原子能量
-        Nepactive.run_mattersim(atoms_list=atoms_list, pot_file=self.pot_file, train_ratio=train_ratio)
+        Nepactive_OB.run_mattersim(atoms_list=atoms_list, pot_file=self.pot_file, train_ratio=train_ratio)
 
     @classmethod
     def run_mattersim(cls, atoms_list:List[Atoms], pot_file:str, train_ratio:float=0.8,tqdm_use:Optional[bool]=False):

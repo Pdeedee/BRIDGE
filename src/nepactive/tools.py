@@ -39,12 +39,20 @@ plt.rcParams['font.serif'] = 'Times New Roman'
 plt.rcParams['font.size'] = 18
 plt.rcParams.update({'axes.linewidth': 2, 'axes.edgecolor': 'black'})
 # 设置全局字体加粗
+# 设置全局字体加粗
 plt.rcParams.update({
+    'font.family': 'Times New Roman',
     'font.weight': 'bold',  # 全局字体加粗
     'axes.labelweight': 'bold',  # 坐标轴标签加粗
     'axes.titleweight': 'bold',  # 标题加粗
     'axes.linewidth': 2,  # 设置坐标轴边框线宽
-    'axes.edgecolor': 'black'  # 设置坐标轴边框颜色
+    'axes.edgecolor': 'black',  # 设置坐标轴边框颜色
+    # 'mathtext.fontset': 'cm',  # 设置数学文本字体
+    'mathtext.default': 'regular',  # 关键设置
+    'mathtext.rm': 'Times New Roman',  # 设置数学文本的正常字体
+    'mathtext.it': 'Times New Roman:italic',  # 设置数学文本的斜体字体
+    'mathtext.bf': 'Times New Roman:bold'  #
+
 })
 from cycler import cycler
 default_cycler = (cycler(color=['b','r', 'g', 'y']) +
@@ -127,8 +135,16 @@ def shock_calculate(volume,pressure,v0,rho):
         slope = np.float64(slope)
         shock_vel = np.sqrt(abs(slope)/rho)
         plt.scatter(x0, y0, color='red', label="(1, 0)",marker="x")
-        plt.annotate(f'(x0, y0):({x0:.2f},{y0:.2f})\ndetonation_vel:{shock_vel:.03f}km/s\nrho:{rho}', xy=(x0, y0), xytext=(0.6, max(pressure)),
-                    fontsize=12, color='red')
+        plt.annotate(
+            r'$({{V}}_{{CJ}}, {{P}}_{{CJ}})$: ({:.2f}, {:.2f})' '\n'
+            r'$D_v$: {:.3f} km/s' '\n'
+            r'$\rho$: {}'.format(x0, y0, shock_vel, rho),
+            xy=(x0, y0),
+            xytext=(0.6, max(pressure)),
+            fontsize=12,
+            color='red'
+        )
+
         dlog.info(f"slope:{slope:.2f}")
         dlog.info(f"shock_vel:{shock_vel:.3f}")
         dlog.info(f"x0_num:{float(x0)}")
@@ -142,7 +158,7 @@ def shock_calculate(volume,pressure,v0,rho):
 
 
     plt.close()
-    return shock_vel,x0,y0
+    return shock_vel,x0,y0,rho
 
 def run_gpumd_task(work_dir:str=None,gpu_available:List[int]=None,task_per_gpu:int=1):
     """
@@ -215,3 +231,11 @@ def compute_volume_from_thermo(thermo:np.ndarray):
         return np.column_stack((thermo[:, [0,1,2,3]], volume))
     else:
         raise ValueError("thermo file has wrong format")
+    
+def get_shortest_distance(atoms:Atoms,atom_index=None):
+    distance_matrix = atoms.get_all_distances(mic=True)
+    np.fill_diagonal(distance_matrix, np.inf)
+    min_index = np.unravel_index(np.argmin(distance_matrix), distance_matrix.shape)
+    if atom_index is not None:
+        atom_index.append(min_index)
+    return np.min(distance_matrix)

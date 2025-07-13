@@ -22,11 +22,11 @@ from nepactive.template import nvt_pytemplate,nphugo_pytemplate,nphugo_template,
 from nepactive.plt import ase_plt,gpumdplt
 from nepactive.tools import shock_calculate,run_gpumd_task,compute_volume_from_thermo
 from ase.io.extxyz import write_extxyz
-from nepactive.tools import  get_shortest_distance
-from nepactive.extract import analyze_trajectory
+from nepactive.stable import StableRun
 
-class StableRun:
+class StableRun_OB(StableRun):
     def __init__(self, idata:dict):
+        # self.idata_o = idata
         self.idata = idata
         self.struc_file_name = os.path.abspath(self.idata.get("structure"))
         self.atoms = read(self.struc_file_name)
@@ -87,14 +87,12 @@ class StableRun:
             self.nat =  self.atoms.get_number_of_atoms()
             property = [self.rho0,self.energy,self.p0,self.volume,self.nat]
             os.chdir(self.work_dir)
-            # dlog.info(f"properties: {property}")
+
             format = "%12.3f "*5
-            # dlog.info(f"format: {format},array: {np.array(property)}")
-            # print(f"properties: {property}")
+
             np.savetxt("properties.txt",np.array(property).reshape(1, -1),fmt=format,encoding="utf-8")
         if self.r_rho is None:
             self.r_rho = self.rho0
-            # dlog.info(f"rho is None, set rho = {self.rho0}")
             self.r_v = self.volume
             dlog.info(f"rho is None, set rho = {self.r_rho}, volume is not changed")
         else:
@@ -295,6 +293,11 @@ class StableRun:
         task_dirs = []
         steps = self.idata.get("steps",400000)
         self.total_time = steps * 0.2
+        if os.path.exists("properties.txt"):
+            rho,e0,p0,v0,nat = np.loadtxt(f"properties.txt")
+        else:
+            e0 = self.energy
+            v0 = self.r_v
         for ii,_ in enumerate(self.pressure_list):
             os.chdir(work_dir)
             task_dir = os.path.join(work_dir,f"task.{ii:03d}")
@@ -303,143 +306,16 @@ class StableRun:
             os.chdir(task_dir)
             dump_freq = self.idata.get("dump_freq",100)
 
-            py_file = nphugo_pytemplate.format(structure = "../structure/stable.pdb",e0=self.energy,dump_freq = dump_freq,
-                                                    v0=self.r_v, pressure=self.pressure_list[ii], steps = steps)
+            py_file = nphugo_pytemplate.format(structure = "../structure/stable.pdb",e0=e0,dump_freq = dump_freq,
+                                                    v0=v0, pressure=self.pressure_list[ii], steps = steps)
             with open("ensemble.py","w",encoding='utf-8') as f:
                 f.write(py_file)
-
-    def post_process(self):
-        if self.pot == "mattersim":
-            self.post_pyprocess()
-        elif self.pot == "nep":
-            self.post_nep_process()
-        else:
-            raise ValueError("Unknown pot")
-    
-    def post_nep_process(self):
-        dlog.info("start post process")
-        dlog.info(f"rho = {self.r_rho}")
-        os.chdir(self.work_dir)
-        task_dirs = glob("*/**/task.*",recursive=True)
-        task_dirs = [os.path.abspath(task_dir) for task_dir in task_dirs]
-        task_dirs.sort()
-        thermos = []
-        # thermo = None
-        thermo_averages = []
-        gpumd_steps = self.idata.get("gpumd_steps",400000)
-        self.total_time = gpumd_steps * 0.2
-        # self.r_v = self.rho0 / self.r_rho * self.volume
-        for task_dir in task_dirs:
-            os.chdir(task_dir)
-            dlog.info(f"post process {task_dir}")
-            thermo = np.loadtxt(os.path.join(task_dir,"thermo.out"),skiprows=1,encoding="utf-8")
-            gpumdplt(total_time = self.total_time)
-            # thermo = np.loadtxt("thermo.out")
-            thermo_new = compute_volume_from_thermo(thermo)[:,[0,2,3,-1]]
-            # frame_property = np.concatenate((property_list_np,thermo_new),axis=1)
-            thermo = thermo_new[int(self.analyze_range[0]*len(thermo)):int(self.analyze_range[1]*len(thermo)),:]
-            thermos.append(thermo)
-            thermo_average = np.average(thermo,axis=0)
-            thermo_averages.append(thermo_average)
-            atoms_list = read("dump.xyz",index=":")
-            shortest_distances = []
-            for index,atoms in enumerate(atoms_list):
-                shortest_d = get_shortest_distance(atoms)
-                shortest_distances.append(shortest_d)
-            molecule_data = analyze_trajectory("dump.xyz", index=":")
-            molecule_num = molecule_data.sum(axis=1).to_numpy()
-            molecule_density = molecule_num / thermo_new[:,3]
-            molecule_data.to_csv("molecule_data.csv")
-            data = np.column_stack((shortest_d, molecule_num, molecule_density))
-            np.savetxt('frame_properties.txt', data, fmt='%12.2f')
-            write_extxyz("final.xyz",atoms_list[-1])
-
-        os.chdir(self.work_dir)
-        format = "%12.2f"*5
-        thermo_averages = np.array(thermo_averages)
-        rel_volume = thermo_averages[:, 3] / self.r_v
-        thermo_averages = np.hstack((thermo_averages, rel_volume.reshape(-1, 1)))
-
-        with open("thermo.txt",'w',encoding="utf-8") as file:
-            np.savetxt(file,np.array(thermo_averages),encoding='utf-8',fmt=format,
-                header=f"Temperature[K]     Pot[eV]     Pressure[GPa]    V[Å^3]    relative_volume\n")
-        dlog.info("saved thermo.txt")
-        dlog.info("post process finished")
-
-
-        thermos = np.loadtxt("thermo.txt",encoding="utf-8")
-        shock_vels = []
-        struc_dir = glob("struc.*")
-        struc_dir = [os.path.abspath(struc) for struc in struc_dir]
-        struc_dir.sort()
-        for ii,struc in enumerate(struc_dir):
-            os.chdir(struc)
-            start_index = ii * len(self.gpumd_pressure_list)
-            thermo_branch = thermos[start_index:start_index+len(self.gpumd_pressure_list),:]
-            volume = thermo_branch[:,3]
-            pressure = thermo_branch[:,2]
-            dlog.info(f"volume: {volume}, pressure: {pressure}, v0: {self.r_v}, rho: {self.r_rho}, initial volume: {self.volume}")
-            shock_vel = shock_calculate(volume=volume,pressure=pressure,v0=self.r_v, rho=self.r_rho)
-            shock_vels.append(shock_vel)
-        os.chdir(self.work_dir)
-        self.shock_vels = np.array(shock_vels)
-        with open("shock_vel.txt",'w') as file:
-            np.savetxt(file,np.array(shock_vels),fmt="%12.2f")
-        dlog.info("saved shock_vel.txt")
-                
-        
-    def post_pyprocess(self):
-        dlog.info("start post process")
-        dlog.info(f"rho = {self.r_rho}")
-        os.chdir(self.work_dir)
-        task_dirs = glob("*/**/task.*",recursive=True)
-        task_dirs = [os.path.abspath(task_dir) for task_dir in task_dirs]
-        task_dirs.sort()
-        thermos = []
-        # thermo = None
-        thermo_averages = []
-        for task_dir in task_dirs:
-            os.chdir(task_dir)
-            dlog.info(f"post process {task_dir}")
-            ase_plt()
-            thermo = np.loadtxt(os.path.join(task_dir,"md.log"),skiprows=1,encoding="utf-8")
-            thermo = thermo[int(self.analyze_range[0]*len(thermo)):int(self.analyze_range[1]*len(thermo)),:]
-            thermos.append(thermo)
-            thermo_average = np.average(thermo,axis=0)
-            thermo_averages.append(thermo_average)
-            atoms = read("out.traj",index=-1)
-            write_extxyz("final.xyz",atoms)
-        os.chdir(self.work_dir)
-        format = "%12.2f"*12
-        with open("thermo.txt",'w',encoding="utf-8") as file:
-            np.savetxt(file,np.array(thermo_averages),encoding='utf-8',fmt=format,
-                   header=f"Time[ps]      Etot[eV]     Epot[eV]     Ekin[eV]    T[K]        V[Å^3]      ---------------------- stress [GPa] -----------------------")
-        dlog.info("saved thermo.txt")
-        dlog.info("post process finished")
-
-        thermos = np.loadtxt("thermo.txt",encoding="utf-8")
-        shock_vels = []
-        struc_dir = glob("struc.*")
-        struc_dir = [os.path.abspath(struc) for struc in struc_dir]
-        struc_dir.sort()
-        for ii,struc in enumerate(struc_dir):
-            os.chdir(struc)
-            start_index = ii * len(self.pressure_list)
-            thermo_branch = thermos[start_index:start_index+len(self.pressure_list),:]
-            volume = thermo_branch[:,5]
-            pressure = np.mean(thermo_branch[:,6:9],axis=1)
-            shock_vel = shock_calculate(volume=volume,pressure=pressure,v0=self.r_v, rho=self.r_rho)
-            shock_vels.append(shock_vel)
-        os.chdir(self.work_dir)
-        with open("shock_vel.txt",'w') as file:
-            np.savetxt(file,np.array(shock_vels),fmt="%12.2f"*3)
-        dlog.info("saved shock_vel.txt")
             
     def make_gpumd_tasks(self):
         os.chdir(self.work_dir)
         task_dirs = []
         struc_prefix = self.idata.get("struc_prefix",os.getcwd())
-        strucs = self.idata.get("structure_files",[])
+        strucs = self.idata.get("structure_files",["POSCAR"])
         # strucs = self.idata.get("structure_files",[])
         assert strucs != [], "structure_files is empty"
         if not os.path.isabs(strucs[0]):
@@ -459,10 +335,25 @@ class StableRun:
         dump_freq = gpumd_steps//2500
         dlog.info(f"r_v: {self.r_v}, r_rho: {self.r_rho}, rho0: {self.rho0}, v0: {self.volume}")
         # os.system("rm -rf task.*")
-        real_p0 = self.idata.get("real_p0",False)
-        if not real_p0:
-            dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
+        self.real_p0 = self.idata.get("real_p0",False)
+        if not self.real_p0:
+            dlog.info(f"real_p0 is {self.real_p0}, will set p0 to 0")
             self.p0 = 0
+
+        fs = glob(f"{work_dir}/properties*.txt")
+        if not fs:
+            dlog.info(f"properties.txt not found in {work_dir}, will use properties.txt in {self.work_dir}")
+            fs = glob(f"{self.work_dir}/properties.txt")
+
+        rho0,e0,p0,v0,nat = np.loadtxt(fs[0],encoding="utf-8")
+
+        r_v = self.rho0 * v0 / self.r_rho
+
+        if not self.real_p0:
+            p0 = 0
+            dlog.info(f"real_p0 is {self.real_p0}, will set p0 to 0")
+
+
         for ii,_ in enumerate(self.gpumd_pressure_list):
             os.chdir(work_dir)
             task_dir = os.path.join(work_dir,f"task.{ii:03d}")
@@ -482,9 +373,9 @@ class StableRun:
                 dump_freq = dump_freq,
                 replicate_cell = "1 1 1",
                 pressure = self.gpumd_pressure_list[ii],
-                e0 = self.energy,
-                v0 = self.r_v,
-                p0 = self.p0,
+                e0 = e0,
+                v0 = r_v,
+                p0 = p0,
                 pperiod = 2000
             )
             with open("run.in","w",encoding='utf-8') as f:
