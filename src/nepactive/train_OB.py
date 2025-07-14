@@ -859,468 +859,468 @@ class Nepactive_OB(Nepactive):
         Nepactive_OB.run_gpumd_task(work_dir=model_devi_dir, gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)
         # self.write_steps()
 
-    @classmethod
-    def run_gpumd_task(cls,work_dir:str=None,gpu_available:List[int]=None,task_per_gpu:int=1):
-        run_gpumd_task(work_dir=work_dir, gpu_available=gpu_available, task_per_gpu=task_per_gpu)
+    # @classmethod
+    # def run_gpumd_task(cls,work_dir:str=None,gpu_available:List[int]=None,task_per_gpu:int=1):
+    #     run_gpumd_task(work_dir=work_dir, gpu_available=gpu_available, task_per_gpu=task_per_gpu)
 
         
-    def get_model_devi(self):
-        '''
-        get the model deviation from the gpumd run
-        '''
-        # dlog.info(f"self.idata:{self.idata}")
-        model_devi_general:list[dict] = self.idata.get("model_devi_general", None)
-        # dlog.info(f"model_devi_general:{model_devi_general}")
-        if os.path.exists(os.path.join(self.work_dir, "model_devi_general.txt")):
-            file = os.path.join(self.work_dir, "model_devi_general.txt")
-            with open(file, mode='r') as f:
-                model_devi_general = float(f.read()[-1])
-            self.model_devi_general_id = np.loadtxt(os.path.join(self.work_dir, "model_devi_general_id.txt"), dtype=int)[-1]
-        else:
-            self.model_devi_general_id = 0
+    # def get_model_devi(self):
+    #     '''
+    #     get the model deviation from the gpumd run
+    #     '''
+    #     # dlog.info(f"self.idata:{self.idata}")
+    #     model_devi_general:list[dict] = self.idata.get("model_devi_general", None)
+    #     # dlog.info(f"model_devi_general:{model_devi_general}")
+    #     if os.path.exists(os.path.join(self.work_dir, "model_devi_general.txt")):
+    #         file = os.path.join(self.work_dir, "model_devi_general.txt")
+    #         with open(file, mode='r') as f:
+    #             model_devi_general = float(f.read()[-1])
+    #         self.model_devi_general_id = np.loadtxt(os.path.join(self.work_dir, "model_devi_general_id.txt"), dtype=int)[-1]
+    #     else:
+    #         self.model_devi_general_id = 0
         
-        if self.model_devi_general_id >= len(model_devi_general):
-            dlog.info(f"finished")
-            exit()
+    #     if self.model_devi_general_id >= len(model_devi_general):
+    #         dlog.info(f"finished")
+    #         exit()
         
-        model_devi = model_devi_general[self.model_devi_general_id] 
+    #     model_devi = model_devi_general[self.model_devi_general_id] 
 
-        return model_devi
+    #     return model_devi
 
-    def post_gpumd_run(self):
-        '''
-        优化版本：专注于循环和I/O瓶颈优化
-        '''
-        try:
-            self.total_time
-        except AttributeError:
-            self.make_gpumd_task_first = False
-            self.make_model_devi()
-            self.make_gpumd_task_first = True
-            dlog.info("remake the gpumd task")
+    # def post_gpumd_run(self):
+    #     '''
+    #     优化版本：专注于循环和I/O瓶颈优化
+    #     '''
+    #     try:
+    #         self.total_time
+    #     except AttributeError:
+    #         self.make_gpumd_task_first = False
+    #         self.make_model_devi()
+    #         self.make_gpumd_task_first = True
+    #         dlog.info("remake the gpumd task")
 
-        # 预先获取所有配置参数，避免重复调用
-        config = self._get_cached_config()
-        nep_dir = os.path.join(self.iter_dir, "00.nep")
+    #     # 预先获取所有配置参数，避免重复调用
+    #     config = self._get_cached_config()
+    #     nep_dir = os.path.join(self.iter_dir, "00.nep")
         
-        # 绘图处理（如果需要，可以考虑跳过或异步处理）
-        if config['plot']:
-            self._handle_plotting_optimized(config)
+    #     # 绘图处理（如果需要，可以考虑跳过或异步处理）
+    #     if config['plot']:
+    #         self._handle_plotting_optimized(config)
 
-        self.gpumd_dir = os.path.join(self.iter_dir, "01.gpumd")
+    #     self.gpumd_dir = os.path.join(self.iter_dir, "01.gpumd")
         
-        # 预先获取和排序所有任务目录，避免多次调用
-        task_dirs = self._get_cached_task_dirs()
+    #     # 预先获取和排序所有任务目录，避免多次调用
+    #     task_dirs = self._get_cached_task_dirs()
         
-        dlog.info(f"-----start analysis the trajectory-----"
-                f"Processing {len(task_dirs)} tasks with config: {config['summary']}")
+    #     dlog.info(f"-----start analysis the trajectory-----"
+    #             f"Processing {len(task_dirs)} tasks with config: {config['summary']}")
 
-        # 核心优化：减少循环内的重复计算和I/O
-        results = self._optimized_task_processing(task_dirs, nep_dir, config)
+    #     # 核心优化：减少循环内的重复计算和I/O
+    #     results = self._optimized_task_processing(task_dirs, nep_dir, config)
         
-        # 快速检查失败任务
-        if self._quick_failure_check(results, config):
-            return
+    #     # 快速检查失败任务
+    #     if self._quick_failure_check(results, config):
+    #         return
         
-        # 批量输出处理
-        self._batch_output_processing(results, config)
+    #     # 批量输出处理
+    #     self._batch_output_processing(results, config)
         
-        # 更新步数和状态
-        self._finalize_iteration(config)
+    #     # 更新步数和状态
+    #     self._finalize_iteration(config)
 
-    def _get_cached_config(self):
-        """一次性获取所有配置，避免重复查询"""
-        model_devi = self.get_model_devi()
-        threshold = model_devi.get("uncertainty_threshold") or self.idata.get("uncertainty_threshold", [0.3, 1])
-        energy_threshold = self.idata.get("energy_threshold", None)
+    # def _get_cached_config(self):
+    #     """一次性获取所有配置，避免重复查询"""
+    #     model_devi = self.get_model_devi()
+    #     threshold = model_devi.get("uncertainty_threshold") or self.idata.get("uncertainty_threshold", [0.3, 1])
+    #     energy_threshold = self.idata.get("energy_threshold", None)
         
-        config = {
-            'plot': self.idata.get("gpumd_plt", True),
-            'threshold': threshold,
-            'energy_threshold': energy_threshold,
-            'mode': self.idata.get("uncertainty_mode", "mean"),
-            'level': self.idata.get("uncertainty_level", 1),
-            'sample_method': self.idata.get("sample_method", "relative"),
-            'continue_from_old': self.idata.get("continue_from_old", False),
-            'max_candidate': self.idata.get("max_candidate", 1000),
-            'max_temp': self.idata.get("max_temp", 10000),
-            'shortest_d': self.idata.get("shortest_d", 0.5),
-            'analyze_range': self.idata.get("analyze_range", [0.5, 1.0]),
-            'max_run_steps': self.idata.get("max_run_steps", 1200000),
-            'max_iter': self.idata.get("max_iter", 20),
-            'time_step': self.idata.get("time_step")
-        }
+    #     config = {
+    #         'plot': self.idata.get("gpumd_plt", True),
+    #         'threshold': threshold,
+    #         'energy_threshold': energy_threshold,
+    #         'mode': self.idata.get("uncertainty_mode", "mean"),
+    #         'level': self.idata.get("uncertainty_level", 1),
+    #         'sample_method': self.idata.get("sample_method", "relative"),
+    #         'continue_from_old': self.idata.get("continue_from_old", False),
+    #         'max_candidate': self.idata.get("max_candidate", 1000),
+    #         'max_temp': self.idata.get("max_temp", 10000),
+    #         'shortest_d': self.idata.get("shortest_d", 0.5),
+    #         'analyze_range': self.idata.get("analyze_range", [0.5, 1.0]),
+    #         'max_run_steps': self.idata.get("max_run_steps", 1200000),
+    #         'max_iter': self.idata.get("max_iter", 20),
+    #         'time_step': self.idata.get("time_step")
+    #     }
         
-        # 预计算一些常用值
-        config['max_candidate_per_task'] = config['max_candidate'] // len(self._get_cached_task_dirs())
-        config['summary'] = f"threshold:{threshold}, energy_threshold:{energy_threshold}, max_temp:{config['max_temp']}"
-        dlog.info(f"Config summary: {config['summary']}")
-        return config
+    #     # 预计算一些常用值
+    #     config['max_candidate_per_task'] = config['max_candidate'] // len(self._get_cached_task_dirs())
+    #     config['summary'] = f"threshold:{threshold}, energy_threshold:{energy_threshold}, max_temp:{config['max_temp']}"
+    #     dlog.info(f"Config summary: {config['summary']}")
+    #     return config
 
-    def _get_cached_task_dirs(self):
-        """缓存任务目录列表"""
-        model_devi_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
-        self._cached_task_dirs = sorted([
-            os.path.join(model_devi_dir, task) 
-            for task in glob(f"{model_devi_dir}/task.[0-9][0-9][0-9][0-9][0-9][0-9]")
-        ])
-        return self._cached_task_dirs
+    # def _get_cached_task_dirs(self):
+    #     """缓存任务目录列表"""
+    #     model_devi_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
+    #     self._cached_task_dirs = sorted([
+    #         os.path.join(model_devi_dir, task) 
+    #         for task in glob(f"{model_devi_dir}/task.[0-9][0-9][0-9][0-9][0-9][0-9]")
+    #     ])
+    #     return self._cached_task_dirs
 
-    def _handle_plotting_optimized(self, config):
-        """优化绘图处理，可选择跳过或异步"""
-        # 如果绘图不重要，可以考虑跳过以节省时间
+    # def _handle_plotting_optimized(self, config):
+    #     """优化绘图处理，可选择跳过或异步"""
+    #     # 如果绘图不重要，可以考虑跳过以节省时间
             
-        model_devi_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
-        task_dirs = self._get_cached_task_dirs()
+    #     model_devi_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
+    #     task_dirs = self._get_cached_task_dirs()
         
-        current_dir = os.getcwd()
-        try:
-            dlog.info(f"plotting {len(task_dirs)} tasks")
-            for task_dir in task_dirs:
-                os.chdir(task_dir)
-                try:
-                    gpumdplt(self.total_time, config['time_step'])
-                except Exception as e:
-                    dlog.error(f"plotting {task_dir} failed: {e}")
-                    # 可以选择继续而不是抛出异常
-                    continue
-        finally:
-            os.chdir(current_dir)
+    #     current_dir = os.getcwd()
+    #     try:
+    #         dlog.info(f"plotting {len(task_dirs)} tasks")
+    #         for task_dir in task_dirs:
+    #             os.chdir(task_dir)
+    #             try:
+    #                 gpumdplt(self.total_time, config['time_step'])
+    #             except Exception as e:
+    #                 dlog.error(f"plotting {task_dir} failed: {e}")
+    #                 # 可以选择继续而不是抛出异常
+    #                 continue
+    #     finally:
+    #         os.chdir(current_dir)
 
-    def _optimized_task_processing(self, task_dirs, nep_dir, config):
-        """优化的任务处理循环"""
-        # 预分配结果容器
-        results = {
-            'failed_indices': [],
-            'thermo_averages': [],
-            'all_candidates': [],
-            'statistics': {'accurate': 0, 'candidate': 0, 'total': 0}
-        }
+    # def _optimized_task_processing(self, task_dirs, nep_dir, config):
+    #     """优化的任务处理循环"""
+    #     # 预分配结果容器
+    #     results = {
+    #         'failed_indices': [],
+    #         'thermo_averages': [],
+    #         'all_candidates': [],
+    #         'statistics': {'accurate': 0, 'candidate': 0, 'total': 0}
+    #     }
         
-        # 预先创建输出目录和文件
-        label_dir = os.path.join(self.iter_dir, "02.label")
-        os.makedirs(label_dir, exist_ok=True)
-        candidate_file = os.path.join(label_dir, "candidate.xyz")
-        if os.path.exists(candidate_file):
-            os.remove(candidate_file)
+    #     # 预先创建输出目录和文件
+    #     label_dir = os.path.join(self.iter_dir, "02.label")
+    #     os.makedirs(label_dir, exist_ok=True)
+    #     candidate_file = os.path.join(label_dir, "candidate.xyz")
+    #     if os.path.exists(candidate_file):
+    #         os.remove(candidate_file)
         
-        # 预计算条件函数，避免在循环中重复创建
-        def make_candidate_condition(frame_prop):
-            return (
-                ((frame_prop[:, 1] >= config['threshold'][0]) & 
-                (frame_prop[:, 1] <= config['threshold'][1])) |
-                (frame_prop[:, 2] > config['energy_threshold'])
-            ) & (frame_prop[:, 3] > config['shortest_d']) & (frame_prop[:, 4] < config['max_temp'])
+    #     # 预计算条件函数，避免在循环中重复创建
+    #     def make_candidate_condition(frame_prop):
+    #         return (
+    #             ((frame_prop[:, 1] >= config['threshold'][0]) & 
+    #             (frame_prop[:, 1] <= config['threshold'][1])) |
+    #             (frame_prop[:, 2] > config['energy_threshold'])
+    #         ) & (frame_prop[:, 3] > config['shortest_d']) & (frame_prop[:, 4] < config['max_temp'])
         
-        def make_accurate_condition(frame_prop):
-            return (frame_prop[:, 1] < config['threshold'][0]) & (frame_prop[:, 2] < config['energy_threshold'])
+    #     def make_accurate_condition(frame_prop):
+    #         return (frame_prop[:, 1] < config['threshold'][0]) & (frame_prop[:, 2] < config['energy_threshold'])
         
-        # 格式化字符串预定义
+    #     # 格式化字符串预定义
 
-        fmt = "%14d"+"%12.2f"*9+"%12.4f"
-        header = f"{'indices':>14} {'time':^14} {'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'molecule_num':^14} {'molecule_density':^14}"
+    #     fmt = "%14d"+"%12.2f"*9+"%12.4f"
+    #     header = f"{'indices':>14} {'time':^14} {'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'molecule_num':^14} {'molecule_density':^14}"
         
-        # 主循环优化
-        current_dir = os.getcwd()
-        analyze_start = config['analyze_range'][0]
-        analyze_end = config['analyze_range'][1]
+    #     # 主循环优化
+    #     current_dir = os.getcwd()
+    #     analyze_start = config['analyze_range'][0]
+    #     analyze_end = config['analyze_range'][1]
         
-        # 预先打开候选文件以追加模式写入
-        with open(candidate_file, 'w') as candidate_f:
-            for ii, task_dir in enumerate(task_dirs):
-                # try:
-                os.chdir(task_dir)
-                dlog.info(f"processing task {ii}")
+    #     # 预先打开候选文件以追加模式写入
+    #     with open(candidate_file, 'w') as candidate_f:
+    #         for ii, task_dir in enumerate(task_dirs):
+    #             # try:
+    #             os.chdir(task_dir)
+    #             dlog.info(f"processing task {ii}")
                 
-                # 核心计算（这部分您说很快）
-                atoms_list, frame_property, failed_row_index = Nepactive_OB.relative_force_error(
-                    total_time=self.total_time, 
-                    nep_dir=nep_dir, 
-                    mode=config['mode'],
-                    level=config['level'], 
-                    allowed_max_temp=config['max_temp'], 
-                    allowed_shortest_distance=config['shortest_d']
-                )
+    #             # 核心计算（这部分您说很快）
+    #             atoms_list, frame_property, failed_row_index = Nepactive_OB.relative_force_error(
+    #                 total_time=self.total_time, 
+    #                 nep_dir=nep_dir, 
+    #                 mode=config['mode'],
+    #                 level=config['level'], 
+    #                 allowed_max_temp=config['max_temp'], 
+    #                 allowed_shortest_distance=config['shortest_d']
+    #             )
                 
-                # 快速保存最后一帧
-                write_extxyz(os.path.join(task_dir, "final.xyz"), atoms_list[-1])
+    #             # 快速保存最后一帧
+    #             write_extxyz(os.path.join(task_dir, "final.xyz"), atoms_list[-1])
                 
-                # 优化：预计算数组切片
-                prop_len = len(frame_property)
-                start_idx = int(analyze_start * prop_len)
-                end_idx = int(analyze_end * prop_len)
+    #             # 优化：预计算数组切片
+    #             prop_len = len(frame_property)
+    #             start_idx = int(analyze_start * prop_len)
+    #             end_idx = int(analyze_end * prop_len)
                 
-                # 热力学平均值计算
-                thermo_avg = np.mean(frame_property[start_idx:end_idx, 1:], axis=0, keepdims=True)
+    #             # 热力学平均值计算
+    #             thermo_avg = np.mean(frame_property[start_idx:end_idx, 1:], axis=0, keepdims=True)
 
-                p_rmse = np.sqrt(np.mean((frame_property[start_idx:end_idx, 6]-thermo_avg[0,5])**2))
-                p_mae = np.mean(np.abs(frame_property[start_idx:end_idx, 6]-thermo_avg[0,5]))
-                p_rmse = p_rmse.reshape(-1, 1)
-                p_mae = p_mae.reshape(-1, 1)
-                thermo_avg = np.hstack((thermo_avg, p_rmse, p_mae))
+    #             p_rmse = np.sqrt(np.mean((frame_property[start_idx:end_idx, 6]-thermo_avg[0,5])**2))
+    #             p_mae = np.mean(np.abs(frame_property[start_idx:end_idx, 6]-thermo_avg[0,5]))
+    #             p_rmse = p_rmse.reshape(-1, 1)
+    #             p_mae = p_mae.reshape(-1, 1)
+    #             thermo_avg = np.hstack((thermo_avg, p_rmse, p_mae))
                 
-                results['thermo_averages'].append(thermo_avg)
+    #             results['thermo_averages'].append(thermo_avg)
                 
-                # 使用预定义的条件函数
-                candidate_condition = make_candidate_condition(frame_property)
-                candidate_indices = np.where(candidate_condition)[0]
+    #             # 使用预定义的条件函数
+    #             candidate_condition = make_candidate_condition(frame_property)
+    #             candidate_indices = np.where(candidate_condition)[0]
                 
-                accurate_condition = make_accurate_condition(frame_property)
-                accurate_count = np.sum(accurate_condition)
+    #             accurate_condition = make_accurate_condition(frame_property)
+    #             accurate_count = np.sum(accurate_condition)
                 
-                # 更新统计信息
-                results['statistics']['accurate'] += accurate_count
-                results['statistics']['candidate'] += len(candidate_indices)
-                results['statistics']['total'] += prop_len
-                results['failed_indices'].append(failed_row_index)
+    #             # 更新统计信息
+    #             results['statistics']['accurate'] += accurate_count
+    #             results['statistics']['candidate'] += len(candidate_indices)
+    #             results['statistics']['total'] += prop_len
+    #             results['failed_indices'].append(failed_row_index)
                 
-                # 候选帧处理优化
-                if len(candidate_indices) > 0:
-                    # 使用高级索引一次性获取数据
-                    filtered_rows = frame_property[candidate_indices]
-                    indices_with_data = np.column_stack((candidate_indices, filtered_rows))
+    #             # 候选帧处理优化
+    #             if len(candidate_indices) > 0:
+    #                 # 使用高级索引一次性获取数据
+    #                 filtered_rows = frame_property[candidate_indices]
+    #                 indices_with_data = np.column_stack((candidate_indices, filtered_rows))
                     
-                    # 选择最佳候选
-                    if len(candidate_indices) > config['max_candidate_per_task']:
-                        # 使用 argpartition 而不是完全排序，更快
-                        n_select = config['max_candidate_per_task']
-                        partition_idx = np.argpartition(indices_with_data[:, 2], -n_select)[-n_select:]
-                        selected_data = indices_with_data[partition_idx]
-                    else:
-                        selected_data = indices_with_data
+    #                 # 选择最佳候选
+    #                 if len(candidate_indices) > config['max_candidate_per_task']:
+    #                     # 使用 argpartition 而不是完全排序，更快
+    #                     n_select = config['max_candidate_per_task']
+    #                     partition_idx = np.argpartition(indices_with_data[:, 2], -n_select)[-n_select:]
+    #                     selected_data = indices_with_data[partition_idx]
+    #                 else:
+    #                     selected_data = indices_with_data
                     
-                    # 按索引排序
-                    final_data = selected_data[selected_data[:, 0].argsort()]
+    #                 # 按索引排序
+    #                 final_data = selected_data[selected_data[:, 0].argsort()]
                     
-                    # 批量获取候选原子
-                    selected_indices = final_data[:, 0].astype(int)
-                    candidate_atoms = [atoms_list[idx] for idx in selected_indices]
+    #                 # 批量获取候选原子
+    #                 selected_indices = final_data[:, 0].astype(int)
+    #                 candidate_atoms = [atoms_list[idx] for idx in selected_indices]
                     
-                    # 直接写入文件，避免内存累积
-                    write_extxyz(candidate_f, candidate_atoms)
+    #                 # 直接写入文件，避免内存累积
+    #                 write_extxyz(candidate_f, candidate_atoms)
                     
-                    # 保存候选数据
-                    np.savetxt(f"candidate_{ii}.txt", final_data, fmt=fmt, header=header, comments=f"_{ii}_")
+    #                 # 保存候选数据
+    #                 np.savetxt(f"candidate_{ii}.txt", final_data, fmt=fmt, header=header, comments=f"_{ii}_")
                     
-                # except Exception as e:
-                #     dlog.error(f"Error in task {ii}: {e}")
-                #     raise RuntimeError(f"Task {ii} failed with error: {e}")
-                # finally:
-                    os.chdir(current_dir)
+    #             # except Exception as e:
+    #             #     dlog.error(f"Error in task {ii}: {e}")
+    #             #     raise RuntimeError(f"Task {ii} failed with error: {e}")
+    #             # finally:
+    #                 os.chdir(current_dir)
         
-        return results
+    #     return results
 
-    def _quick_failure_check(self, results, config):
-        """快速检查失败任务"""
-        failed_indices = np.array(results['failed_indices'])
-        if len(failed_indices) == 0:
-            return False
+    # def _quick_failure_check(self, results, config):
+    #     """快速检查失败任务"""
+    #     failed_indices = np.array(results['failed_indices'])
+    #     if len(failed_indices) == 0:
+    #         return False
             
-        # 使用第一个任务的长度作为参考
-        frame_len = results['statistics']['total'] // len(failed_indices) if len(failed_indices) > 0 else 0
-        failed_threshold = int(0.8 * frame_len)
+    #     # 使用第一个任务的长度作为参考
+    #     frame_len = results['statistics']['total'] // len(failed_indices) if len(failed_indices) > 0 else 0
+    #     failed_threshold = int(0.8 * frame_len)
         
-        early_failures = failed_indices < failed_threshold
-        if np.any(early_failures):
-            min_failed = np.min(failed_indices)
-            failed_tasks = np.array(self._get_cached_task_dirs())[early_failures]
+    #     early_failures = failed_indices < failed_threshold
+    #     if np.any(early_failures):
+    #         min_failed = np.min(failed_indices)
+    #         failed_tasks = np.array(self._get_cached_task_dirs())[early_failures]
             
-            self.run_steps = max(22000, int(self.run_steps * min_failed / frame_len))
-            dlog.info(f"Early failures detected at indices {failed_indices[early_failures]}")
+    #         self.run_steps = max(22000, int(self.run_steps * min_failed / frame_len))
+    #         dlog.info(f"Early failures detected at indices {failed_indices[early_failures]}")
             
-            self.handle_bad_job(
-                failed_row_indices=failed_indices[early_failures],
-                failed_task_dirs=failed_tasks
-            )
-            self.write_steps()
-            return True
+    #         self.handle_bad_job(
+    #             failed_row_indices=failed_indices[early_failures],
+    #             failed_task_dirs=failed_tasks
+    #         )
+    #         self.write_steps()
+    #         return True
         
-        return False
+    #     return False
 
-    def _batch_output_processing(self, results, config):
-        """批量处理输出"""
-        # 处理热力学数据
-        if results['thermo_averages']:
-            thermo_data = np.vstack(results['thermo_averages'])
-            thermo_file = f'{self.work_dir}/thermo.txt'
+    # def _batch_output_processing(self, results, config):
+    #     """批量处理输出"""
+    #     # 处理热力学数据
+    #     if results['thermo_averages']:
+    #         thermo_data = np.vstack(results['thermo_averages'])
+    #         thermo_file = f'{self.work_dir}/thermo.txt'
             
-            with open(thermo_file, 'a') as f:
-                np.savetxt(f, thermo_data, 
-                        fmt="%24.2f"+"%14.2f"*6+"%14.4f"*2+"%14.2f"*2,
-                        header=f"{'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'molecule_num':^14} {'molecule_density':^14} {'P_RMSE':^14} {'P_MAE':^14}",
-                        comments=f"#iter.{self.ii:06d}")
+    #         with open(thermo_file, 'a') as f:
+    #             np.savetxt(f, thermo_data, 
+    #                     fmt="%24.2f"+"%14.2f"*6+"%14.4f"*2+"%14.2f"*2,
+    #                     header=f"{'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'molecule_num':^14} {'molecule_density':^14} {'P_RMSE':^14} {'P_MAE':^14}",
+    #                     comments=f"#iter.{self.ii:06d}")
         
-        # 计算和记录比例
-        stats = results['statistics']
-        if stats['total'] > 0:
-            accurate_ratio = stats['accurate'] / stats['total']
-            candidate_ratio = stats['candidate'] / stats['total']
-            failed_ratio = 1 - accurate_ratio - candidate_ratio
-            dlog.info(f"Ratios - failed: {failed_ratio:.4f}, candidate: {candidate_ratio:.4f}, accurate: {accurate_ratio:.4f}")
+    #     # 计算和记录比例
+    #     stats = results['statistics']
+    #     if stats['total'] > 0:
+    #         accurate_ratio = stats['accurate'] / stats['total']
+    #         candidate_ratio = stats['candidate'] / stats['total']
+    #         failed_ratio = 1 - accurate_ratio - candidate_ratio
+    #         dlog.info(f"Ratios - failed: {failed_ratio:.4f}, candidate: {candidate_ratio:.4f}, accurate: {accurate_ratio:.4f}")
 
-    def _finalize_iteration(self, config):
-        """完成迭代处理"""
-        if self.run_steps > config['max_run_steps']:
-            if self.ii >= config['max_iter']:
-                dlog.info(f"Reached max iteration: {config['max_iter']}, finished")
-                exit()
-            else:
-                self.run_steps = config['max_run_steps'] / self.run_steps_factor
+    # def _finalize_iteration(self, config):
+    #     """完成迭代处理"""
+    #     if self.run_steps > config['max_run_steps']:
+    #         if self.ii >= config['max_iter']:
+    #             dlog.info(f"Reached max iteration: {config['max_iter']}, finished")
+    #             exit()
+    #         else:
+    #             self.run_steps = config['max_run_steps'] / self.run_steps_factor
         
-        self.write_steps()
-        dlog.info("All frames processed successfully")
+    #     self.write_steps()
+    #     dlog.info("All frames processed successfully")
     
-    def handle_bad_job(self,failed_row_indices=None,failed_task_dirs=None,allowed_shortest_distance=0.5, run_temp = 1500):
-        """
-        rerun the failed task
-        """
-        work_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd/mattersim"
-        if not os.path.exists(work_dir):
-            os.makedirs(work_dir,exist_ok=True)
-        os.chdir(work_dir)
-        dlog.info(f"the failed job will be rerun in {os.getcwd()}")
-        task_dirs = []
-        os.system(f"rm -rf task.*")
-        for ii,failed_row_index in enumerate(failed_row_indices):
-            if failed_row_index < 3:
-                raise ValueError(f"the first 4 frames are failed, please check the input of {failed_task_dirs[ii]}")
-            task_dir = os.path.join(work_dir, f"task.{ii:06d}")
-            task_dirs.append(task_dir)
-            os.makedirs(task_dir, exist_ok=True)
-            os.chdir(task_dir)
+    # def handle_bad_job(self,failed_row_indices=None,failed_task_dirs=None,allowed_shortest_distance=0.5, run_temp = 1500):
+    #     """
+    #     rerun the failed task
+    #     """
+    #     work_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd/mattersim"
+    #     if not os.path.exists(work_dir):
+    #         os.makedirs(work_dir,exist_ok=True)
+    #     os.chdir(work_dir)
+    #     dlog.info(f"the failed job will be rerun in {os.getcwd()}")
+    #     task_dirs = []
+    #     os.system(f"rm -rf task.*")
+    #     for ii,failed_row_index in enumerate(failed_row_indices):
+    #         if failed_row_index < 3:
+    #             raise ValueError(f"the first 4 frames are failed, please check the input of {failed_task_dirs[ii]}")
+    #         task_dir = os.path.join(work_dir, f"task.{ii:06d}")
+    #         task_dirs.append(task_dir)
+    #         os.makedirs(task_dir, exist_ok=True)
+    #         os.chdir(task_dir)
 
-            dlog.info(f"the {failed_row_index-2} frames of {failed_task_dirs[ii]} will be rerun")
-            atoms = read(os.path.join(failed_task_dirs[ii], "dump.xyz"), index = failed_row_index-2)
-            struc_file = os.path.abspath(os.path.join(task_dir, "POSCAR"))
-            write(struc_file, atoms)
-            py_file = continue_pytemplate.format(structure = struc_file,temperature = run_temp, steps = 20000)
-            with open(os.path.join(task_dir, "ensemble.py"), "w",encoding="utf-8") as f:
-                f.write(py_file)
+    #         dlog.info(f"the {failed_row_index-2} frames of {failed_task_dirs[ii]} will be rerun")
+    #         atoms = read(os.path.join(failed_task_dirs[ii], "dump.xyz"), index = failed_row_index-2)
+    #         struc_file = os.path.abspath(os.path.join(task_dir, "POSCAR"))
+    #         write(struc_file, atoms)
+    #         py_file = continue_pytemplate.format(structure = struc_file,temperature = run_temp, steps = 20000)
+    #         with open(os.path.join(task_dir, "ensemble.py"), "w",encoding="utf-8") as f:
+    #             f.write(py_file)
 
-        os.chdir(work_dir)
-        task_dirs = [os.path.abspath(task_dir) for task_dir in glob("task.*")]
+    #     os.chdir(work_dir)
+    #     task_dirs = [os.path.abspath(task_dir) for task_dir in glob("task.*")]
         
-        task_dirs.sort()
+    #     task_dirs.sort()
 
-        sorted_task_dirs = copy.deepcopy(task_dirs)
+    #     sorted_task_dirs = copy.deepcopy(task_dirs)
 
-        for task_dir in task_dirs:
-            os.chdir(task_dir)
-            if os.path.exists("task_finished"):
-                sorted_task_dirs.remove(task_dir)
-                dlog.info(f"the task {task_dir} has been finished")
+    #     for task_dir in task_dirs:
+    #         os.chdir(task_dir)
+    #         if os.path.exists("task_finished"):
+    #             sorted_task_dirs.remove(task_dir)
+    #             dlog.info(f"the task {task_dir} has been finished")
 
-        os.chdir(work_dir)
+    #     os.chdir(work_dir)
 
-        self.run_pytasks(sorted_task_dirs)
+    #     self.run_pytasks(sorted_task_dirs)
         
-        os.chdir(work_dir)
-        trajs = []
-        for task_dir in task_dirs:
-            traj_file = os.path.join(task_dir, "out.traj")
-            traj = read(traj_file, index = ":")
-            trajs.extend(traj)
+    #     os.chdir(work_dir)
+    #     trajs = []
+    #     for task_dir in task_dirs:
+    #         traj_file = os.path.join(task_dir, "out.traj")
+    #         traj = read(traj_file, index = ":")
+    #         trajs.extend(traj)
             
-        self.max_candidate = self.idata.get("max_candidate", 1000)
+    #     self.max_candidate = self.idata.get("max_candidate", 1000)
         
-        if len(trajs) > self.max_candidate:
-            # 随机抽取max_candidate个样本
-            random_indices = random.sample(range(len(trajs)), self.max_candidate)
-            random_indices.sort()  # 可选，保持帧的顺序
-            trajs = [trajs[i] for i in random_indices]
-        shortest_distances = [] 
-        for ii, atoms in enumerate(trajs):
-            shortest_distance = get_shortest_distance(atoms)
-            shortest_distances.append(shortest_distance)
-        np.savetxt("shortest_distance.txt", shortest_distances, fmt = "%12.2f")
-        if np.any(np.array(shortest_distances) < allowed_shortest_distance):
-            dlog.error(f"some frames have shortest distance less than {allowed_shortest_distance}")
-            raise ValueError(f"some frames have shortest distance less than {allowed_shortest_distance}")
+    #     if len(trajs) > self.max_candidate:
+    #         # 随机抽取max_candidate个样本
+    #         random_indices = random.sample(range(len(trajs)), self.max_candidate)
+    #         random_indices.sort()  # 可选，保持帧的顺序
+    #         trajs = [trajs[i] for i in random_indices]
+    #     shortest_distances = [] 
+    #     for ii, atoms in enumerate(trajs):
+    #         shortest_distance = get_shortest_distance(atoms)
+    #         shortest_distances.append(shortest_distance)
+    #     np.savetxt("shortest_distance.txt", shortest_distances, fmt = "%12.2f")
+    #     if np.any(np.array(shortest_distances) < allowed_shortest_distance):
+    #         dlog.error(f"some frames have shortest distance less than {allowed_shortest_distance}")
+    #         raise ValueError(f"some frames have shortest distance less than {allowed_shortest_distance}")
 
-        label_dir = os.path.join(self.iter_dir, "02.label")
-        os.makedirs(label_dir, exist_ok=True)
-        os.chdir(label_dir)
-        with open("candidate.xyz", "a") as f:
-            write_extxyz(f, trajs)
+    #     label_dir = os.path.join(self.iter_dir, "02.label")
+    #     os.makedirs(label_dir, exist_ok=True)
+    #     os.chdir(label_dir)
+    #     with open("candidate.xyz", "a") as f:
+    #         write_extxyz(f, trajs)
 
-    def run_pytasks(self, task_dirs):
-        """
-        运行生成python任务
-        """
-        self.gpu_available = self.idata.get("gpu_available", [0, 1, 2, 3])
-        self.gpu_per_task = self.idata.get("gpu_per_task", 1)
-        python_interpreter = self.idata.get("python_interpreter")
-        processes = []
+    # def run_pytasks(self, task_dirs):
+    #     """
+    #     运行生成python任务
+    #     """
+    #     self.gpu_available = self.idata.get("gpu_available", [0, 1, 2, 3])
+    #     self.gpu_per_task = self.idata.get("gpu_per_task", 1)
+    #     python_interpreter = self.idata.get("python_interpreter")
+    #     processes = []
         
-        # 限制同时运行的任务数量
-        max_concurrent_tasks = len(self.gpu_available)  # 或者其他合理的数量
+    #     # 限制同时运行的任务数量
+    #     max_concurrent_tasks = len(self.gpu_available)  # 或者其他合理的数量
         
-        for i in range(0, len(task_dirs), max_concurrent_tasks):
-            batch_dirs = task_dirs[i:i + max_concurrent_tasks]
-            batch_processes = []
+    #     for i in range(0, len(task_dirs), max_concurrent_tasks):
+    #         batch_dirs = task_dirs[i:i + max_concurrent_tasks]
+    #         batch_processes = []
             
-            for task_dir in batch_dirs:
-                os.chdir(task_dir)
-                if os.path.exists("task_finished"):
-                    dlog.warning(f"{task_dir} has already been finished, skip it")
-                    continue
+    #         for task_dir in batch_dirs:
+    #             os.chdir(task_dir)
+    #             if os.path.exists("task_finished"):
+    #                 dlog.warning(f"{task_dir} has already been finished, skip it")
+    #                 continue
                     
-                basename = "ensemble.py"
-                gpu_id = self.gpu_available[len(batch_processes) % len(self.gpu_available)]
-                env = os.environ.copy()
-                env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    #             basename = "ensemble.py"
+    #             gpu_id = self.gpu_available[len(batch_processes) % len(self.gpu_available)]
+    #             env = os.environ.copy()
+    #             env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
                 
-                log_file = os.path.join(task_dir, 'log')
-                try:
-                    with open(log_file, 'w') as log:
-                        process = subprocess.Popen(
-                            [python_interpreter, basename],
-                            stdout=log,
-                            stderr=subprocess.STDOUT,
-                            env=env
-                        )
-                        batch_processes.append((process, task_dir))
-                except Exception as e:
-                    dlog.error(f"Failed to start process in {task_dir}: {str(e)}")
-                    raise Exception(f"Failed to start process in {task_dir}: {str(e)}")
+    #             log_file = os.path.join(task_dir, 'log')
+    #             try:
+    #                 with open(log_file, 'w') as log:
+    #                     process = subprocess.Popen(
+    #                         [python_interpreter, basename],
+    #                         stdout=log,
+    #                         stderr=subprocess.STDOUT,
+    #                         env=env
+    #                     )
+    #                     batch_processes.append((process, task_dir))
+    #             except Exception as e:
+    #                 dlog.error(f"Failed to start process in {task_dir}: {str(e)}")
+    #                 raise Exception(f"Failed to start process in {task_dir}: {str(e)}")
 
             
-            # 添加超时机制和健康检查
-            timeout = 3600  # 设置合理的超时时间（秒）
-            start_time = time.time()
+    #         # 添加超时机制和健康检查
+    #         timeout = 3600  # 设置合理的超时时间（秒）
+    #         start_time = time.time()
             
-            while batch_processes and time.time() - start_time < timeout:
-                for i, (process, task_dir) in enumerate(batch_processes[:]):
-                    ret = process.poll()
-                    if ret is not None:  # 进程已结束
-                        if ret != 0:
-                            dlog.error(f"Process failed with return code {ret}. Check log at: {task_dir}/log")
-                        else:
-                            try:
-                                os.chdir(task_dir)
-                                ase_plt()
-                                os.system(f"touch {task_dir}/task_finished")
-                                dlog.info(f"Process completed successfully. Log at: {task_dir}/log")
-                            except Exception as e:
-                                dlog.error(f"Post-processing failed for {task_dir}: {str(e)}")
-                                raise Exception(f"Post-processing failed for {task_dir}: {str(e)}")
+    #         while batch_processes and time.time() - start_time < timeout:
+    #             for i, (process, task_dir) in enumerate(batch_processes[:]):
+    #                 ret = process.poll()
+    #                 if ret is not None:  # 进程已结束
+    #                     if ret != 0:
+    #                         dlog.error(f"Process failed with return code {ret}. Check log at: {task_dir}/log")
+    #                     else:
+    #                         try:
+    #                             os.chdir(task_dir)
+    #                             ase_plt()
+    #                             os.system(f"touch {task_dir}/task_finished")
+    #                             dlog.info(f"Process completed successfully. Log at: {task_dir}/log")
+    #                         except Exception as e:
+    #                             dlog.error(f"Post-processing failed for {task_dir}: {str(e)}")
+    #                             raise Exception(f"Post-processing failed for {task_dir}: {str(e)}")
                         
-                        batch_processes.pop(i)
+    #                     batch_processes.pop(i)
                 
-                # 防止 CPU 空转
-                if batch_processes:
-                    time.sleep(1)
+    #             # 防止 CPU 空转
+    #             if batch_processes:
+    #                 time.sleep(1)
             
-            # 处理超时的进程
-            for process, task_dir in batch_processes:
-                if process.poll() is None:  # 进程仍在运行
-                    dlog.warning(f"Process in {task_dir} timed out, terminating...")
-                    process.terminate()
-                    time.sleep(2)
-                    if process.poll() is None:
-                        dlog.error(f"Process in {task_dir} still running after termination, killing...")
-                        process.kill()  # 强制终止
-                    dlog.error(f"Process in {task_dir} terminated due to timeout")
+    #         # 处理超时的进程
+    #         for process, task_dir in batch_processes:
+    #             if process.poll() is None:  # 进程仍在运行
+    #                 dlog.warning(f"Process in {task_dir} timed out, terminating...")
+    #                 process.terminate()
+    #                 time.sleep(2)
+    #                 if process.poll() is None:
+    #                     dlog.error(f"Process in {task_dir} still running after termination, killing...")
+    #                     process.kill()  # 强制终止
+    #                 dlog.error(f"Process in {task_dir} terminated due to timeout")
         
     @classmethod
     def relative_force_error(cls, total_time, nep_dir = None, mode:str = "mean", level = 1 ,allowed_shortest_distance = 0.5, allowed_max_temp = 10000):

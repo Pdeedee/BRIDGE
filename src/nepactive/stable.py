@@ -350,7 +350,7 @@ class StableRun:
             molecule_num = molecule_data.sum(axis=1).to_numpy()
             molecule_density = molecule_num / thermo_new[:,3]
             molecule_data.to_csv("molecule_data.csv")
-            data = np.column_stack((shortest_d, molecule_num, molecule_density))
+            data = np.column_stack((shortest_distances, molecule_num, molecule_density))
             np.savetxt('frame_properties.txt', data, fmt='%12.2f')
             write_extxyz("final.xyz",atoms_list[-1])
 
