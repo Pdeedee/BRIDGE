@@ -547,7 +547,7 @@ class NPHugo(MTTK):
             self.e0 = self.atoms.get_total_energy()
         self.natom = len(self.atoms)
         self.tdof = 3*self.natom
-        self.t_stop = self.get_target_temp()
+        self.t_stop = max(300,self.get_target_temp())
         self.tchain = tchain
         self.pchain = pchain
         super().__init__(atoms, timestep, run_steps=2000,

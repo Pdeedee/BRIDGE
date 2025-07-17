@@ -119,6 +119,11 @@ def calculate_properties(work_dir:str = None, idata:dict = None):
     work_dir = f"{work_dir}/init"
     os.chdir(work_dir)
     stable_data:dict = idata.get("stable")
+
+    stable_data["python_interpreter"] = idata.get("python_interpreter", "python")
+    stable_data["task_per_gpu"] = idata.get("task_per_gpu", 1)
+    stable_data["gpu_available"] = idata.get("gpu_available", [0,1,2,3])
+
     stable_run = StableRun_OB(stable_data)
     stable_run.calculate_properties()
 
@@ -225,6 +230,11 @@ class Nepactive_OB(Nepactive):
         rho = self.idata.get("rho", None)
         stable_data:dict = self.idata.get("stable")
         stable_data["steps"] = self.idata.get("ini_traj_steps", 40000)
+
+        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        stable_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
+        stable_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
+
         if rho:
             dlog.info(f"rho is {rho}, will run stable run for rho={rho}")
             stable_data["rho"] = rho
@@ -468,6 +478,11 @@ class Nepactive_OB(Nepactive):
             stable_data["nep"] = os.path.join(os.path.abspath(os.path.abspath(os.getcwd())),"nep.txt")
         stable_data["original_make"] = False
         struture_files = os.path.join(os.path.abspath(os.getcwd()), "POSCAR")
+
+        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        stable_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
+        stable_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
+
         stable_data["structure_files"] = [struture_files]
         if not os.path.isfile("properties.txt"):
             raise ValueError("properties.txt is not found, please check your in.yaml")
@@ -496,6 +511,10 @@ class Nepactive_OB(Nepactive):
         nep_file = os.path.join(self.iter_dir, "00.nep/task.000000/nep.txt")
         stable_data["nep"] = nep_file
         stable_data["pot"] = "nep"
+
+        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        stable_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
+        stable_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
 
         original_make = stable_data.get("original_make", False)
         final_xyzs = glob(f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd/task.[0-9][0-9][0-9][0-9][0-9][0-9]/final.xyz")

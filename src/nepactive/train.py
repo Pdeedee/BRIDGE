@@ -117,6 +117,7 @@ class Nepactive(object):
         work_dir = f"{self.work_dir}/init"
         os.chdir(work_dir)
         stable_data:dict = self.idata.get("stable")
+        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
         stable_run = StableRun(stable_data)
         stable_run.calculate_properties()
 
@@ -134,6 +135,7 @@ class Nepactive(object):
         # if if_stable_run:
         rho = self.idata.get("rho", None)
         stable_data:dict = self.idata.get("stable")
+        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
         if rho:
             dlog.info(f"rho is {rho}, will run stable run for rho={rho}")
             stable_data["rho"] = rho
@@ -364,6 +366,11 @@ class Nepactive(object):
         stable_data["original_make"] = False
         struture_files = os.path.join(os.path.abspath(os.getcwd()), "POSCAR")
         stable_data["structure_files"] = [struture_files]
+        
+        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        stable_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
+        stable_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
+
         if not os.path.isfile("properties.txt"):
             raise ValueError("properties.txt is not found, please check your in.yaml")
         for rho in rhos:
@@ -392,6 +399,11 @@ class Nepactive(object):
         stable_data["nep"] = nep_file
         stable_data["pot"] = "nep"
         original_make = stable_data.get("original_make", False)
+
+        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        stable_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
+        stable_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
+        
         if original_make:
             structure_files = [os.path.abspath(self.idata.get("structure_files")[0])]
         else:
@@ -661,9 +673,9 @@ class Nepactive(object):
         assert e0 and p0 and v0, "e0, p0, v0 are not empty set"
 
         task_dicts = []
-        ensembles = model_devi.get("ensembles")
+        ensembles = model_devi.get("ensembles",["nphugo"])
         for ensemble_index,ensemble in enumerate(ensembles):
-            structure_id = model_devi.get("structure_id")[ensemble_index]
+            structure_id = model_devi.get("structure_id",[[0]])[ensemble_index]
             all_dict = {}
             assert structure_files is not None
             structure = [structure_files[ii] for ii in structure_id] #####################################################
@@ -1041,7 +1053,7 @@ class Nepactive(object):
             min_failed = np.min(failed_indices)
             failed_tasks = np.array(self._get_cached_task_dirs())[early_failures]
             
-            self.run_steps = max(22000, int(self.run_steps * min_failed / frame_len))
+            self.run_steps = max(22000, int(self.run_steps*min_failed/frame_len),self.run_steps/self.run_steps_factor)
             dlog.info(f"Early failures detected at indices {failed_indices[early_failures]}")
             
             self.handle_bad_job(
@@ -1081,7 +1093,8 @@ class Nepactive(object):
                 dlog.info(f"Reached max iteration: {config['max_iter']}, finished")
                 exit()
             else:
-                self.run_steps = config['max_run_steps'] / self.run_steps_factor
+                self.run_steps = config['max_run_steps'] 
+                # / self.run_steps_factor
         
         self.write_steps()
         dlog.info("All frames processed successfully")

@@ -28,7 +28,7 @@ from nepactive.extract import analyze_trajectory
 class StableRun:
     def __init__(self, idata:dict):
         self.idata = idata
-        self.struc_file_name = os.path.abspath(self.idata.get("structure"))
+        self.struc_file_name = os.path.abspath(self.idata.get("structure","POSCAR"))
         self.atoms = read(self.struc_file_name)
         calculator=MatterSimCalculator(device="cuda")
         self.atoms._calc = calculator
@@ -65,11 +65,13 @@ class StableRun:
             if not os.path.exists("task_finished"):
                 nvt_pyfile = nvt_pytemplate.format(structure=self.struc_file_name,temperature = 300, steps = 2000)
                 python_interpreter = self.idata.get("python_interpreter")
+                print(f"python interpreter:{python_interpreter},self.idata: {self.idata}")
                 with open("ensemble.py","w") as f:
                     f.write(nvt_pyfile)
                 env = os.environ.copy()
 
                 with open("log", 'w') as log:
+                    # print(f"{python_interpreter} ensemble.py")
                     process = subprocess.Popen(
                             [python_interpreter, "ensemble.py"], 
                             stdout=log, 
@@ -332,7 +334,7 @@ class StableRun:
         for task_dir in task_dirs:
             os.chdir(task_dir)
             dlog.info(f"post process {task_dir}")
-            thermo = np.loadtxt(os.path.join(task_dir,"thermo.out"),skiprows=1,encoding="utf-8")
+            thermo = np.loadtxt(os.path.join(task_dir,"thermo.out"),skiprows=0,encoding="utf-8")
             gpumdplt(total_time = self.total_time)
             # thermo = np.loadtxt("thermo.out")
             thermo_new = compute_volume_from_thermo(thermo)[:,[0,2,3,-1]]
@@ -348,6 +350,7 @@ class StableRun:
                 shortest_distances.append(shortest_d)
             molecule_data = analyze_trajectory("dump.xyz", index=":")
             molecule_num = molecule_data.sum(axis=1).to_numpy()
+            print(f"molecule_num shape: {molecule_num.shape}, thermo_new shape: {thermo_new.shape}")
             molecule_density = molecule_num / thermo_new[:,3]
             molecule_data.to_csv("molecule_data.csv")
             data = np.column_stack((shortest_distances, molecule_num, molecule_density))

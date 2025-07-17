@@ -1,0 +1,9 @@
+rhos: [1.0, 1.2, 1.4, 1.6, 1.8, 2.0] # 模拟的密度列表，单位为g/cm^3
+task_per_gpu: 1
+gpu_available: [0,1,2,3]
+model_devi_general:
+python_interpreter: "/workplace/liuzf/miniforge3/envs/dev/bin/python" # 模型开发所使用的python解释器
+
+stable:
+  gpumd_pressure_list: [20,25,30,35,40,45,50,55,60] # 爆速测试的压力列表
+  gpumd_steps: 400000          # 爆速测试的gpumd运行步数 

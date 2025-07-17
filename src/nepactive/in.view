@@ -1,0 +1,12 @@
+rho: 1.62
+task_per_gpu: 1
+gpu_available: [0,1,2,3]
+python_interpreter: "/workplace/liuzf/miniforge3/envs/dev/bin/python" # 模型开发所使用的python解释器
+model_devi_general:
+  -
+    pressure: [20,35,50,60] # 模拟的压力列表，单位为GPa
+
+stable:
+  struc_num: 0                 # 用来跑爆速的初始结构
+  pressures: [20,40,60,80]     # 初始数据集的所采取的压力列表
+  gpumd_pressure_list: [20,25,30,35,40,45,50,55,60] # 爆速测试的压力列表

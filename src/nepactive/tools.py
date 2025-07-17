@@ -113,34 +113,41 @@ def shock_calculate(volume,pressure,v0,rho):
 
     y = np.abs(a * x**2 + b * x + c)
     # print(f"x,y:{x,y}")
-    plt.plot(x, y)
+    if b < 0 and c < 0:
+        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2${:.2f}x{:.2f}".format(a,b,c))
+    elif b < 0 and c >= 0:
+        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2${:.2f}x+{:.2f}".format(a,b,c))
+    elif b >= 0 and c < 0:
+        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2$+{:.2f}x{:.2f}".format(a,b,c))
     try:
         slope = float(slope)
         y_tangent = np.abs(slope * (x-1))
-        plt.plot(x, y_tangent, label=f"y = {slope:8.2f}(x - 1)")
+        plt.plot(x, y_tangent, label=f"Rayleigh Line: y={slope:.2f}(x-1)", color='r')
+
     except TypeError:
         slope = None
         dlog.error(f"TypeError: {slope}, the fitting is failed")
 
 
     plt.scatter(rel_volume, pressure, color='red')
-    plt.xlim(0.3, 1)
+    plt.xlim(0.5, 1)
     plt.ylim(0,int(max(pressure)*1.2))
     plt.xlabel('Relative Volume')
     plt.ylabel('Pressure (GPa)')
-    plt.legend()
+    plt.legend(fontsize=8,loc='upper right')
     plt.tight_layout()
 
     if slope:
         slope = np.float64(slope)
         shock_vel = np.sqrt(abs(slope)/rho)
-        plt.scatter(x0, y0, color='red', label="(1, 0)",marker="x")
+        plt.scatter(x0, y0, color='red',marker="x")
         plt.annotate(
+            r'$\rho$: {} g/cm³' '\n'
             r'$({{V}}_{{CJ}}, {{P}}_{{CJ}})$: ({:.2f}, {:.2f})' '\n'
-            r'$D_v$: {:.3f} km/s' '\n'
-            r'$\rho$: {}'.format(x0, y0, shock_vel, rho),
+            r'$D_v$: {:.3f} km/s' '\n'.format(rho, x0, y0, shock_vel),
             xy=(x0, y0),
-            xytext=(0.6, max(pressure)),
+            # xycoords='axes fraction',
+            xytext=(0.52, 0.1*max(pressure)),
             fontsize=12,
             color='red'
         )
