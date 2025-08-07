@@ -18,7 +18,7 @@ import itertools
 from concurrent.futures import ThreadPoolExecutor
 import re
 import copy
-from nepactive.stable_OB import StableRun_OB
+from nepactive.stable import StableRun
 from nepactive.template import npt_template,nphugo_template,nvt_template,msst_template,model_devi_template,nep_in_template,nphugo_pytemplate,nvt_pytemplate,continue_pytemplate
 from nepactive.plt import gpumdplt,nep_plt,ase_plt
 from nepactive import parse_yaml
@@ -261,7 +261,7 @@ class Nepactive_OB(Nepactive):
             os.chdir(struc_dir)
             atoms = read(f"{self.work_dir}/POSCAR")
             os.makedirs("structure",exist_ok=True)
-            write(f"structure/stable.pdb",atoms)
+            write(f"structure/POSCAR",atoms)
             stable_run.make_preparations()
 
         OB_gives = self.idata.get("OB_gives", [])
@@ -275,7 +275,7 @@ class Nepactive_OB(Nepactive):
             os.system(f"ln {self.work_dir}/OBfs/properties_OB_{OB_gives[-1]}.txt properties.txt -snf")
             atoms = read(f"{self.work_dir}/OBfs/OB_{OB_gives[-1]}.pdb")
             os.makedirs("structure", exist_ok=True)
-            write("structure/stable.pdb", atoms)
+            write("structure/POSCAR", atoms)
             stable_run.make_preparations()
             
             
@@ -521,7 +521,7 @@ class Nepactive_OB(Nepactive):
         final_xyzs.sort()
 
         if original_make:
-            structure_files = [final_xyzs[len(self.idata.get("model_devi_general",{}).get("pressure"))-1]]
+            structure_files = [final_xyzs[len(self.idata.get("model_devi_general",{})[0].get("pressure"))-1]]
         else:
             structure_files = []
 
@@ -540,12 +540,18 @@ class Nepactive_OB(Nepactive):
             dlog.info(f"start running {ii}th task of {len(struc)}")
             atoms = read(struc)
             write("POSCAR", atoms)
-            stable_task = StableRun_OB(stable_data)
+            stable_task = StableRun(stable_data)
             stable_data["structure_files"] = [struc]
             stable_task.run()
-            with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
-                f.write(f"{self.ii}\n")
-                np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
+            if ii==0:
+                with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
+                    f.write(f"# {self.ii}\n")
+                    np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
+            else:
+                with open(f"{self.work_dir}/shock_vel_OB.txt", "a") as f:
+                    f.write(f"# {self.ii}\n")
+                    np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
+            
             os.chdir(f"{work_dir}")
         dlog.info(f"Shock velocity test completed, results is {stable_task.shock_vels} km/s")
 
@@ -617,16 +623,16 @@ class Nepactive_OB(Nepactive):
                     else:
                         dlog.info(f"Process completed successfully. Log saved at: {log_file}")
 
-    def post_label_task(self):
-        '''
-        '''
-        test_interval = self.idata.get("shock_test_interval", 1)
-        test_begin_step = self.idata.get("shock_test_begin_step", 400000)
+    # def post_label_task(self):
+    #     '''
+    #     '''
+    #     test_interval = self.idata.get("shock_test_interval", 1)
+    #     test_begin_step = self.idata.get("shock_test_begin_step", 400000)
 
-        self.run_steps = int(np.loadtxt(f"{self.work_dir}/steps.txt",ndmin=1,encoding="utf-8")[-1])
-        if self.run_steps > test_begin_step and self.ii%test_interval == 0:
-            dlog.info(f"run_steps is {self.run_steps}, will run shock velocity test")
-            self.shock_vel_test()
+    #     self.run_steps = int(np.loadtxt(f"{self.work_dir}/steps.txt",ndmin=1,encoding="utf-8")[-1])
+    #     if self.run_steps > test_begin_step and self.ii%test_interval == 0:
+    #         dlog.info(f"run_steps is {self.run_steps}, will run shock velocity test")
+    #         self.shock_vel_test()
 
     def post_nep_train(self):
         '''
@@ -1415,95 +1421,95 @@ class Nepactive_OB(Nepactive):
             
         return atoms_list, frame_property, first_row_index
 
-    def make_label_task(self):
-        label_engine = self.idata.get("label_engine","mattersim")
-        if label_engine == "mattersim":
-            self.make_mattersim_task()
-        elif label_engine == "vasp":
-            self.make_vasp_task()
-        else:
-            raise NotImplementedError(f"The label engine {label_engine} is not implemented")        
+    # def make_label_task(self):
+    #     label_engine = self.idata.get("label_engine","mattersim")
+    #     if label_engine == "mattersim":
+    #         self.make_mattersim_task()
+    #     elif label_engine == "vasp":
+    #         self.make_vasp_task()
+    #     else:
+    #         raise NotImplementedError(f"The label engine {label_engine} is not implemented")        
 
-    def make_mattersim_task(self):
-        """
-        change the calculator to mattersim, and write the train.xyz
-        """
+    # def make_mattersim_task(self):
+    #     """
+    #     change the calculator to mattersim, and write the train.xyz
+    #     """
 
-        # 将工作目录设置为iter_dir下的02.label文件夹
-        iter_dir = self.iter_dir
-        work_dir = os.path.join(iter_dir, "02.label")
-        train_ratio = self.idata.get("training_ratio", 0.8)
-        os.chdir(work_dir)
-        atoms_list = read("candidate.xyz", index=":", format="extxyz")
-        self.pot_file = self.idata.get("pot_file")
-        # 创建MatterSimCalculator对象，用于计算原子能量
-        Nepactive_OB.run_mattersim(atoms_list=atoms_list, pot_file=self.pot_file, train_ratio=train_ratio)
+    #     # 将工作目录设置为iter_dir下的02.label文件夹
+    #     iter_dir = self.iter_dir
+    #     work_dir = os.path.join(iter_dir, "02.label")
+    #     train_ratio = self.idata.get("training_ratio", 0.8)
+    #     os.chdir(work_dir)
+    #     atoms_list = read("candidate.xyz", index=":", format="extxyz")
+    #     self.pot_file = self.idata.get("pot_file")
+    #     # 创建MatterSimCalculator对象，用于计算原子能量
+    #     Nepactive_OB.run_mattersim(atoms_list=atoms_list, pot_file=self.pot_file, train_ratio=train_ratio)
 
-    @classmethod
-    def run_mattersim(cls, atoms_list:List[Atoms], pot_file:str, train_ratio:float=0.8,tqdm_use:Optional[bool]=False):
-        calculator = MatterSimCalculator(load_path=pot_file,device="cuda")
-        if os.path.exists("candidate.traj"):
-            os.remove("candidate.traj")
-        traj = Trajectory('candidate.traj', mode='a')
+    # @classmethod
+    # def run_mattersim(cls, atoms_list:List[Atoms], pot_file:str, train_ratio:float=0.8,tqdm_use:Optional[bool]=False):
+    #     calculator = MatterSimCalculator(load_path=pot_file,device="cuda")
+    #     if os.path.exists("candidate.traj"):
+    #         os.remove("candidate.traj")
+    #     traj = Trajectory('candidate.traj', mode='a')
 
-        def change_calc(atoms:Atoms):
-            atoms._calc=calculator
-            atoms.get_potential_energy()
-            traj.write(atoms)
-            return atoms
+    #     def change_calc(atoms:Atoms):
+    #         atoms._calc=calculator
+    #         atoms.get_potential_energy()
+    #         traj.write(atoms)
+    #         return atoms
 
-        if tqdm_use:
-            atoms = [change_calc(atoms_list[i]) for i in tqdm(range(len(atoms_list)))]
-        else:
-            atoms = [change_calc(atoms_list[i]) for i in range(len(atoms_list))]   
-        # 读取Trajectory对象中的原子信息
-        atoms = read("candidate.traj",index=":")
-        train:List[Atoms]=[]
-        test:List[Atoms]=[]
-        failed:List[Atoms]=[]
-        failed_index=[]
-        for i in range(len(atoms)):
-            rand=random.random()
-            if np.max(np.abs(atoms[i].get_forces())) > 60:
-                failed.append(atoms[i])
-                failed_index.append(i)
-            elif rand <= train_ratio:
-                train.append(atoms[i])
-            elif rand > train_ratio:
-                test.append(atoms[i])
-            else:
-                dlog.warning(f"{atoms[i]}failed to be classified")
-        if train:
-            write_extxyz("iter_train.xyz",train)
-        if test:
-            write_extxyz("iter_test.xyz",test)
-        if failed:
-            write_extxyz("iter_failed.xyz",failed)
-            np.savetxt("failed_index.txt",failed_index,fmt="%12d")
-        # 将原子信息写入train_iter.xyz文件
-        dlog.warning(f"failed structures:{len(failed_index)}")
-        del calculator
-        empty_cache()
+    #     if tqdm_use:
+    #         atoms = [change_calc(atoms_list[i]) for i in tqdm(range(len(atoms_list)))]
+    #     else:
+    #         atoms = [change_calc(atoms_list[i]) for i in range(len(atoms_list))]   
+    #     # 读取Trajectory对象中的原子信息
+    #     atoms = read("candidate.traj",index=":")
+    #     train:List[Atoms]=[]
+    #     test:List[Atoms]=[]
+    #     failed:List[Atoms]=[]
+    #     failed_index=[]
+    #     for i in range(len(atoms)):
+    #         rand=random.random()
+    #         if np.max(np.abs(atoms[i].get_forces())) > 60:
+    #             failed.append(atoms[i])
+    #             failed_index.append(i)
+    #         elif rand <= train_ratio:
+    #             train.append(atoms[i])
+    #         elif rand > train_ratio:
+    #             test.append(atoms[i])
+    #         else:
+    #             dlog.warning(f"{atoms[i]}failed to be classified")
+    #     if train:
+    #         write_extxyz("iter_train.xyz",train)
+    #     if test:
+    #         write_extxyz("iter_test.xyz",test)
+    #     if failed:
+    #         write_extxyz("iter_failed.xyz",failed)
+    #         np.savetxt("failed_index.txt",failed_index,fmt="%12d")
+    #     # 将原子信息写入train_iter.xyz文件
+    #     dlog.warning(f"failed structures:{len(failed_index)}")
+    #     del calculator
+    #     empty_cache()
 
-    def make_vasp_task(self):
-        task = Remotetask(iternum = self.ii, idata = self.idata, trajfile = self.trajfile)
-        task.run_submission(jj=3)
+    # def make_vasp_task(self):
+    #     task = Remotetask(iternum = self.ii, idata = self.idata, trajfile = self.trajfile)
+    #     task.run_submission(jj=3)
 
-    def run_label_task(self):
-        label_engine = self.idata.get("label_engine","mattersim")
-        if label_engine == "mattersim":
-            return
-        elif label_engine == "vasp":
-            self.run_vasp_task()
+    # def run_label_task(self):
+    #     label_engine = self.idata.get("label_engine","mattersim")
+    #     if label_engine == "mattersim":
+    #         return
+    #     elif label_engine == "vasp":
+    #         self.run_vasp_task()
 
-    def run_vasp_task(self):
-        assert os.path.isabs(self.iter_dir)
-        os.chdir(f"{self.iter_dir}/02.label")
-        if task is None:
-            task = Remotetask(idata = self.idata)
-        task.run_submission(jj=4)
+    # def run_vasp_task(self):
+    #     assert os.path.isabs(self.iter_dir)
+    #     os.chdir(f"{self.iter_dir}/02.label")
+    #     if task is None:
+    #         task = Remotetask(idata = self.idata)
+    #     task.run_submission(jj=4)
 
-    def write_steps(self):
-        with open(f"{self.work_dir}/steps.txt","a") as f:
-            f.write(f"{int(self.run_steps):12d}\n")
-        np.savetxt(f"{self.work_dir}/iter.{self.ii:06d}/steps.txt",np.array([self.run_steps]),fmt="%12d")
+    # def write_steps(self):
+    #     with open(f"{self.work_dir}/steps.txt","a") as f:
+    #         f.write(f"{int(self.run_steps):12d}\n")
+    #     np.savetxt(f"{self.work_dir}/iter.{self.ii:06d}/steps.txt",np.array([self.run_steps]),fmt="%12d")

@@ -161,7 +161,7 @@ class Nepactive(object):
             os.chdir(struc_dir)
             atoms = read(f"{self.work_dir}/POSCAR")
             os.makedirs("structure",exist_ok=True)
-            write(f"structure/stable.pdb",atoms)
+            write(f"structure/POSCAR",atoms)
             stable_run.make_preparations()
             
         ase_ensemble_files = self.idata.get("ini_ase_ensemble_files")
@@ -421,7 +421,7 @@ class Nepactive(object):
         stable_task = StableRun(stable_data)
         stable_task.run()
         with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
-            f.write(f"{self.ii}\n")
+            f.write(f"#{self.ii}\n")
             np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
         dlog.info(f"Shock velocity test completed, results is {stable_task.shock_vels} km/s")
 
@@ -501,6 +501,15 @@ class Nepactive(object):
         if self.run_steps > test_begin_step and self.ii%test_interval == 0:
             dlog.info(f"run_steps is {self.run_steps}, will run shock velocity test")
             self.shock_vel_test()
+        if os.path.exists(f"{self.work_dir}/shock_vel.txt"):    
+            shock_data = np.loadtxt(f"{self.work_dir}/shock_vel.txt", ndmin=1, encoding="utf-8")
+            if len(shock_data) > 3:
+                Dv_error = np.abs(shock_data[-3:,0].max()- shock_data[-3:,0].min())/shock_data[-3:,0].mean()*100
+                dlog.info(f"Shock velocity error is {Dv_error:.2f}%")
+                accuracy = self.idata.get("accuracy", 1)
+                if Dv_error < accuracy:
+                    dlog.info(f"Reach accuracy {accuracy}%, job finished successfully, will stop training process")
+                    exit()
 
     def post_nep_train(self):
         '''
@@ -817,8 +826,6 @@ class Nepactive(object):
 
         return model_devi
 
-
-
     def post_gpumd_run(self):
         '''
         优化版本：专注于循环和I/O瓶颈优化
@@ -943,6 +950,7 @@ class Nepactive(object):
                 (frame_prop[:, 1] <= config['threshold'][1])) |
                 (frame_prop[:, 2] > config['energy_threshold'])
             ) & (frame_prop[:, 3] > config['shortest_d']) & (frame_prop[:, 4] < config['max_temp'])
+            
         
         def make_accurate_condition(frame_prop):
             return (frame_prop[:, 1] < config['threshold'][0]) & (frame_prop[:, 2] < config['energy_threshold'])
@@ -1011,9 +1019,14 @@ class Nepactive(object):
                     # 使用高级索引一次性获取数据
                     filtered_rows = frame_property[candidate_indices]
                     indices_with_data = np.column_stack((candidate_indices, filtered_rows))
-                    
+
+                    dlog.info(f"Task {ii} has {len(indices_with_data)} candidates before filtering from failed index")
+                    mask = np.arange(indices_with_data.shape[0]) < failed_row_index
+                    indices_with_data = indices_with_data[mask]
+                    dlog.info(f"Task {ii} has {len(indices_with_data)} candidates")
+
                     # 选择最佳候选
-                    if len(candidate_indices) > config['max_candidate_per_task']:
+                    if len(indices_with_data) > config['max_candidate_per_task']:
                         # 使用 argpartition 而不是完全排序，更快
                         n_select = config['max_candidate_per_task']
                         partition_idx = np.argpartition(indices_with_data[:, 2], -n_select)[-n_select:]
@@ -1053,13 +1066,15 @@ class Nepactive(object):
             min_failed = np.min(failed_indices)
             failed_tasks = np.array(self._get_cached_task_dirs())[early_failures]
             
-            self.run_steps = max(22000, int(self.run_steps*min_failed/frame_len),self.run_steps/self.run_steps_factor)
+            # self.run_steps = int(self.run_steps*min_failed/frame_len)
             dlog.info(f"Early failures detected at indices {failed_indices[early_failures]}")
             
             self.handle_bad_job(
                 failed_row_indices=failed_indices[early_failures],
                 failed_task_dirs=failed_tasks
             )
+            self.run_steps = max(22000, int(self.run_steps*min_failed/frame_len), int(self.run_steps/self.run_steps_factor))
+            dlog.info(f"Adjusted run_steps to {self.run_steps} for next iteration")
             self.write_steps()
             return True
         
@@ -1306,7 +1321,7 @@ class Nepactive(object):
         molecule_density = molecule_num / frame_property[:,7]
         frame_property = np.hstack((frame_property, molecule_num.reshape(-1, 1)))
         frame_property = np.hstack((frame_property, molecule_density.reshape(-1, 1)))
-        molecule_data.iloc[-1].to_csv("molecule_data.csv", index=False)
+        molecule_data.iloc[-1].to_csv("molecule_data.csv")
 
         temperatures = thermo[:,0]
         shortest_distances = frame_property[:,3]
@@ -1354,14 +1369,16 @@ class Nepactive(object):
         Nepactive.run_mattersim(atoms_list=atoms_list, pot_file=self.pot_file, train_ratio=train_ratio)
 
     @classmethod
-    def run_mattersim(cls, atoms_list:List[Atoms], pot_file:str, train_ratio:float=0.8,tqdm_use:Optional[bool]=False):
+    def run_mattersim(cls, atoms_list:List[Atoms], pot_file:str, train_ratio:float=0.8,tqdm_use:Optional[bool]=True):
         calculator = MatterSimCalculator(load_path=pot_file,device="cuda")
         if os.path.exists("candidate.traj"):
             os.remove("candidate.traj")
         traj = Trajectory('candidate.traj', mode='a')
 
         def change_calc(atoms:Atoms):
-            atoms._calc=calculator
+            atoms.calc=calculator
+            if hasattr(atoms, "info") and "virial" in atoms.info:
+                del atoms.info["virial"]
             atoms.get_potential_energy()
             traj.write(atoms)
             return atoms
@@ -1372,6 +1389,9 @@ class Nepactive(object):
             atoms = [change_calc(atoms_list[i]) for i in range(len(atoms_list))]   
         # 读取Trajectory对象中的原子信息
         atoms = read("candidate.traj",index=":")
+        if hasattr(atoms, "calc") and "virial" in atoms.calc.results:
+            dlog.info("Removing 'virial' from calculator results to avoid issues with training")
+            del atoms.calc.results["virial"]
         train:List[Atoms]=[]
         test:List[Atoms]=[]
         failed:List[Atoms]=[]

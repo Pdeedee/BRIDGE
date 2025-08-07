@@ -1,0 +1,6 @@
+# 4
+# Shock velocities (m/s) for each rho
+10.180 0.723 52.238 1.821
+# 5
+# Shock velocities (m/s) for each rho
+10.175 0.710 54.599 1.821

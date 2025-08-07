@@ -162,7 +162,7 @@ class StableRun:
             os.chdir(struc_dir)
             atoms = read(f"{self.work_dir}/POSCAR")
             os.makedirs("structure",exist_ok=True)
-            write(f"structure/stable.pdb",atoms)
+            write(f"structure/POSCAR",atoms)
             self.make_preparations()
 
     def make_preparations(self):
@@ -172,7 +172,7 @@ class StableRun:
         struc_dir = os.getcwd()
 
         error = 1
-        if not os.path.exists("structure/stable.pdb"):           
+        if not os.path.exists("structure/POSCAR"):           
             while (not new) or (error != 0):
                 molecule_dict,error = self.make_molecule_dict()
                 if molecule_dict not in self.molecule_dicts:
@@ -192,9 +192,9 @@ class StableRun:
             parent_dir = os.path.dirname(os.path.dirname(current_dir))
             source_file = os.path.join(parent_dir, 'molecules')
 
-            if not os.path.isfile("stable.pdb"):
+            if not os.path.isfile("POSCAR"):
                 os.system(f"cp {source_file}/*pdb .")
-                self.make_structure(molecule_dict,name="stable.pdb")
+                self.make_structure(molecule_dict,name="POSCAR")
                 dlog.info(f"make structure for {molecule_dict}")
 
         os.chdir(struc_dir)
@@ -305,7 +305,7 @@ class StableRun:
             os.chdir(task_dir)
             dump_freq = self.idata.get("dump_freq",100)
 
-            py_file = nphugo_pytemplate.format(structure = "../structure/stable.pdb",e0=self.energy,dump_freq = dump_freq,
+            py_file = nphugo_pytemplate.format(structure = "../structure/POSCAR",e0=self.energy,dump_freq = dump_freq,
                                                     v0=self.r_v, pressure=self.pressure_list[ii], steps = steps)
             with open("ensemble.py","w",encoding='utf-8') as f:
                 f.write(py_file)
@@ -344,6 +344,8 @@ class StableRun:
             thermo_average = np.average(thermo,axis=0)
             thermo_averages.append(thermo_average)
             atoms_list = read("dump.xyz",index=":")
+            if os.path.exists("molecule_data.csv"):
+                continue
             shortest_distances = []
             for index,atoms in enumerate(atoms_list):
                 shortest_d = get_shortest_distance(atoms)
@@ -354,7 +356,7 @@ class StableRun:
             molecule_density = molecule_num / thermo_new[:,3]
             molecule_data.to_csv("molecule_data.csv")
             data = np.column_stack((shortest_distances, molecule_num, molecule_density))
-            np.savetxt('frame_properties.txt', data, fmt='%12.2f')
+            np.savetxt('frame_properties.txt', data, fmt='%12.2f', header="shortest_d, molecule_num, molecule_density")
             write_extxyz("final.xyz",atoms_list[-1])
 
         os.chdir(self.work_dir)

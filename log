@@ -1,18 +1,13 @@
 sending incremental file list
-src/nepactive/nphugo.py
-src/nepactive/train_OB.py
-src/nepactive/.vscode/launch.json
+src/nepactive/train.py
 src/nepactive/__pycache__/
 src/nepactive/__pycache__/extract.cpython-311.pyc
 src/nepactive/__pycache__/main.cpython-311.pyc
 src/nepactive/__pycache__/nphugo.cpython-311.pyc
-src/nepactive/__pycache__/nphugo.cpython-39.pyc
 src/nepactive/__pycache__/packmol.cpython-311.pyc
 src/nepactive/__pycache__/stable.cpython-311.pyc
-src/nepactive/__pycache__/stable.cpython-39.pyc
 src/nepactive/__pycache__/tools.cpython-311.pyc
 src/nepactive/__pycache__/train.cpython-311.pyc
-src/nepactive/__pycache__/train_OB.cpython-39.pyc
 
-sent 94,298 bytes  received 3,537 bytes  65,223.33 bytes/sec
-total size is 1,951,343  speedup is 19.95
+sent 79,461 bytes  received 2,680 bytes  164,282.00 bytes/sec
+total size is 2,336,429  speedup is 28.44

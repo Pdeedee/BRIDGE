@@ -158,7 +158,7 @@ class StableRun_OB(StableRun):
             os.chdir(struc_dir)
             atoms = read(f"{self.work_dir}/POSCAR")
             os.makedirs("structure",exist_ok=True)
-            write(f"structure/stable.pdb",atoms)
+            write(f"structure/POSCAR",atoms)
             self.make_preparations()
 
     def make_preparations(self):
@@ -168,7 +168,7 @@ class StableRun_OB(StableRun):
         struc_dir = os.getcwd()
 
         error = 1
-        if not os.path.exists("structure/stable.pdb"):           
+        if not os.path.exists("structure/POSCAR"):           
             while (not new) or (error != 0):
                 molecule_dict,error = self.make_molecule_dict()
                 if molecule_dict not in self.molecule_dicts:
@@ -188,9 +188,9 @@ class StableRun_OB(StableRun):
             parent_dir = os.path.dirname(os.path.dirname(current_dir))
             source_file = os.path.join(parent_dir, 'molecules')
 
-            if not os.path.isfile("stable.pdb"):
+            if not os.path.isfile("POSCAR"):
                 os.system(f"cp {source_file}/*pdb .")
-                self.make_structure(molecule_dict,name="stable.pdb")
+                self.make_structure(molecule_dict,name="POSCAR")
                 dlog.info(f"make structure for {molecule_dict}")
 
         os.chdir(struc_dir)
@@ -306,7 +306,7 @@ class StableRun_OB(StableRun):
             os.chdir(task_dir)
             dump_freq = self.idata.get("dump_freq",100)
 
-            py_file = nphugo_pytemplate.format(structure = "../structure/stable.pdb",e0=e0,dump_freq = dump_freq,
+            py_file = nphugo_pytemplate.format(structure = "../structure/POSCAR",e0=e0,dump_freq = dump_freq,
                                                     v0=v0, pressure=self.pressure_list[ii], steps = steps)
             with open("ensemble.py","w",encoding='utf-8') as f:
                 f.write(py_file)
