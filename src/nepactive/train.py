@@ -1317,11 +1317,11 @@ class Nepactive(object):
         frame_property = np.concatenate((property_list_np,thermo_new),axis=1)
 
         molecule_data = analyze_trajectory("dump.xyz", index=":")
-        molecule_num = molecule_data.sum(axis=1).to_numpy()
+        molecule_num = molecule_data.sum(axis=1).to_numpy()-molecule_data[:,0].to_numpy()
         molecule_density = molecule_num / frame_property[:,7]
         frame_property = np.hstack((frame_property, molecule_num.reshape(-1, 1)))
         frame_property = np.hstack((frame_property, molecule_density.reshape(-1, 1)))
-        molecule_data.iloc[-1].to_csv("molecule_data.csv")
+        molecule_data.to_csv("molecule_data.csv")
 
         temperatures = thermo[:,0]
         shortest_distances = frame_property[:,3]
