@@ -4,22 +4,44 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')  # 设置为非交互式后端
 import matplotlib.pyplot as plt
-plt.rcParams['font.family'] = 'serif'
-plt.rcParams['font.serif'] = 'Times New Roman'
+# plt.rcParams['font.family'] = 'serif'
+# plt.rcParams['font.serif'] = 'Times New Roman'
+# plt.rcParams['font.size'] = 18
+# plt.rcParams.update({'axes.linewidth': 2, 'axes.edgecolor': 'black'})
+# # 设置全局字体加粗
+# plt.rcParams.update({
+#     'font.weight': 'bold',  # 全局字体加粗
+#     'axes.labelweight': 'bold',  # 坐标轴标签加粗
+#     'axes.titleweight': 'bold',  # 标题加粗
+#     'axes.linewidth': 2,  # 设置坐标轴边框线宽
+#     'axes.edgecolor': 'black',  # 设置坐标轴边框颜色
+#     'mathtext.default': 'regular',  # 关键设置
+#     'mathtext.rm': 'Times New Roman',  # 设置数学文本的正常字体
+#     'mathtext.it': 'Times New Roman:italic',  # 设置数学文本的斜体字体
+#     'mathtext.bf': 'Times New Roman:bold'  #
+# })
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = ['Arial']   # 图表字体 Arial
 plt.rcParams['font.size'] = 18
-plt.rcParams.update({'axes.linewidth': 2, 'axes.edgecolor': 'black'})
-# 设置全局字体加粗
+
 plt.rcParams.update({
-    'font.weight': 'bold',  # 全局字体加粗
-    'axes.labelweight': 'bold',  # 坐标轴标签加粗
-    'axes.titleweight': 'bold',  # 标题加粗
-    'axes.linewidth': 2,  # 设置坐标轴边框线宽
-    'axes.edgecolor': 'black'  # 设置坐标轴边框颜色
+    # 'font.weight': 'bold',
+    # 'axes.labelweight': 'bold',
+    # 'axes.titleweight': 'bold',
+    'font.weight': 'normal',
+    'axes.labelweight': 'normal',
+    'axes.titleweight': 'normal',
+    'axes.linewidth': 1,
+    'axes.edgecolor': 'black',
+    'mathtext.default': 'regular',
+    'mathtext.rm': 'Arial',                 # 数学公式用 Arial
+    'mathtext.it': 'Arial:italic',
+    'mathtext.bf': 'Arial:bold'
 })
-from cycler import cycler
-default_cycler = (cycler(color=['b','r', 'g', 'y']) +
-                  cycler(linestyle=['-', '--', ':', '-.']))
-plt.rc('axes', prop_cycle=default_cycler)
+# from cycler import cycler
+# default_cycler = (cycler(color=['b','r', 'g', 'y']) +
+#                   cycler(linestyle=['-', '--', ':', '-.']))
+# plt.rc('axes', prop_cycle=default_cycler)
 
 def gpumdplt(total_time,time_step=0.2):
 
@@ -67,7 +89,7 @@ def gpumdplt(total_time,time_step=0.2):
 
     # 温度
     # print(f"time = {time.shape}, temperature = {temperature.shape}")
-    axs[0, 0].plot(time, temperature)
+    axs[0, 0].plot(time, temperature, color="b")
     axs[0, 0].set_title('Temperature')
     axs[0, 0].set_xlabel('Time (ps)')
     axs[0, 0].set_ylabel('Temperature (K)')
@@ -75,7 +97,7 @@ def gpumdplt(total_time,time_step=0.2):
     # 势能与动能
     color_potential = 'tab:orange'
     color_kinetic = 'tab:green'
-    axs[0, 1].set_title(r'$P_E$ vs $K_E$')
+    axs[0, 1].set_title(r'$E_P$ vs $E_K$')
     axs[0, 1].set_xlabel('Time (ps)')
     axs[0, 1].set_ylabel('Potential Energy (eV)', color=color_potential)
     axs[0, 1].plot(time, potential_energy, color=color_potential)
@@ -87,20 +109,21 @@ def gpumdplt(total_time,time_step=0.2):
     axs_kinetic.tick_params(axis='y', labelcolor=color_kinetic)
 
     # 压力
-    axs[1, 0].plot(time, pressure_x, label='Px')
-    axs[1, 0].plot(time, pressure_y, label='Py')
-    axs[1, 0].plot(time, pressure_z, label='Pz')
+    axs[1, 0].plot(time, pressure_x, label=r'$P_{xx}$')
+    axs[1, 0].plot(time, pressure_y, label=r'$P_{yx}$')
+    axs[1, 0].plot(time, pressure_z, label=r'$P_{zz}$')
     axs[1, 0].set_title('Pressure')
     axs[1, 0].set_xlabel('Time (ps)')
     axs[1, 0].set_ylabel('Pressure (GPa)')
-    axs[1, 0].legend()
+    axs[1, 0].set_ylim(0,max(int(1.2*np.max(pressure_z)),60))
+    axs[1, 0].legend(framealpha=0)
 
     # 相对体积
-    axs[1, 1].plot(time, volume, label='Volume')
+    axs[1, 1].plot(time, volume, color="b")
     axs[1, 1].set_title('Volume')
     axs[1, 1].set_xlabel('Time (ps)')
-    axs[1, 1].set_ylabel('Volume')
-    axs[1, 1].legend()
+    axs[1, 1].set_ylabel(r'Volume ($\AA^{3}$)')
+    # axs[1, 1].legend(framealpha=0)
 
     plt.tight_layout()
 
@@ -128,7 +151,7 @@ def nep_plt(testplt=True):
     loglog(loss[:, 7:9])
     xlabel('Generation/100')
     ylabel('Loss')
-    legend(['Total', 'L1-regularization', 'L2-regularization', 'Energy-train', 'Force-train', 'Energy-test', 'Force-test'])
+    legend(['Total', 'L1-regularization', 'L2-regularization', 'Energy-train', 'Force-train', 'Energy-test', 'Force-test'],framealpha=0)
     tight_layout()
     plt.savefig('loss.png', dpi=300)  # 你可以修改文件名和文件格式
     plt.close()
@@ -138,7 +161,7 @@ def nep_plt(testplt=True):
     x_max = np.max(energy[:, :])
     plot(energy[:, 1], energy[:, 0], '.')
     plot(linspace(x_min,x_max), linspace(x_min,x_max), '-')
-    xlabel('DFT energy (eV/atom)')
+    xlabel('MatterSim energy (eV/atom)')
     ylabel('NEP energy (eV/atom)')
     tight_layout()
     plt.savefig(f'{prefix}energy.png', dpi=300)  # 你可以修改文件名和文件格式
@@ -149,9 +172,9 @@ def nep_plt(testplt=True):
     x_max = np.max(force[:, :])
     plot(force[:, 3:6], force[:, 0:3], '.')
     plot(linspace(x_min,x_max), linspace(x_min,x_max), '-',color='r')
-    xlabel('DFT force (eV/A)')
+    xlabel('MatterSim force (eV/A)')
     ylabel('NEP force (eV/A)')
-    legend(['x direction', 'y direction', 'z direction'])
+    legend(['x direction', 'y direction', 'z direction'],framealpha=0)
     tight_layout()
     plt.savefig(f'{prefix}force.png', dpi=300)  # 你可以修改文件名和文件格式
     plt.close()
@@ -161,9 +184,9 @@ def nep_plt(testplt=True):
     x_max = np.max(virial[:, :])
     plot(virial[:, 6:11], virial[:, 0:5], '.')
     plot(linspace(x_min,x_max), linspace(x_min,x_max), '-',color='r')
-    xlabel('DFT Virial (eV/A)')
+    xlabel('MatterSim Virial (eV/A)')
     ylabel('NEP Virial (eV/A)')
-    legend(['xx', 'yy', 'zz', 'xy', 'yz', 'zx'])
+    legend(['xx', 'yy', 'zz', 'xy', 'yz', 'zx'],framealpha=0)
     tight_layout()
     plt.savefig(f'{prefix}virial.png', dpi=300)  # 你可以修改文件名和文件格式
     plt.close()
@@ -182,11 +205,11 @@ def ase_plt():
     volume = data[:, 5]
 
     # 子图
-    fig, axs = plt.subplots(2, 2, figsize=(11, 7.5), dpi=100)
+    fig, axs = plt.subplots(2, 2, figsize=(11, 7.5), dpi=300)
 
     # 温度
     # print(f"time = {time.shape}, temperature = {temperature.shape}")
-    axs[0, 0].plot(time, temperature)
+    axs[0, 0].plot(time, temperature, color="b")
     axs[0, 0].set_title('Temperature')
     axs[0, 0].set_xlabel('Time (ps)')
     axs[0, 0].set_ylabel('Temperature (K)')
@@ -212,14 +235,14 @@ def ase_plt():
     axs[1, 0].set_title('Pressure')
     axs[1, 0].set_xlabel('Time (ps)')
     axs[1, 0].set_ylabel('Pressure (GPa)')
-    axs[1, 0].legend()
+    axs[1, 0].legend(framealpha=0)
 
     # 相对体积
-    axs[1, 1].plot(time, volume, label='Volume')
+    axs[1, 1].plot(time, volume)#, label='Volume')
     axs[1, 1].set_title('Volume')
     axs[1, 1].set_xlabel('Time (ps)')
     axs[1, 1].set_ylabel('Volume')
-    axs[1, 1].legend()
+    # axs[1, 1].legend()
 
     plt.tight_layout()
 

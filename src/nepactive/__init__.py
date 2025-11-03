@@ -21,4 +21,12 @@ def parse_yaml(file):
     with open(file, encoding='utf-8') as f:
         data = yaml.safe_load(f)
         # data = yaml.safe_load("in.yaml")
+    # if os.path.exists(f"{os.path.dirname(file)}/nostrucnum"):
+    #     data["stable"]["struc_num"] = 0
+    #     data["structure_files"] = ["POSCAR"]
+    #     data["model_devi_general"][0]["structure_id"] = [[0]]
+    # else:
+    #     data["stable"]["struc_num"] = 1
+    #     data["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
+    #     data["model_devi_general"][0]["structure_id"] = [[0,1]]
     return data

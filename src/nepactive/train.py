@@ -23,7 +23,7 @@ from nepactive.template import npt_template,nphugo_template,nvt_template,msst_te
 from nepactive.plt import gpumdplt,nep_plt,ase_plt
 from nepactive import parse_yaml
 from nepactive.force import force_main
-from nepactive.tools import compute_volume_from_thermo,run_gpumd_task
+from nepactive.tools import compute_volume_from_thermo,run_gpumd_task,run_py_task
 from nepactive.extract import analyze_trajectory
 from nepactive.write_extxyz import write_extxyz
 import time
@@ -32,6 +32,7 @@ from nepactive.tools import get_shortest_distance
 # from concurrent.futures import ProcessPoolExecutor, as_completed
 # from functools import partial
 # from collections import defaultdict
+import yaml
 
 class RestartSignal(Exception):
     def __init__(self, restart_total_time = None):
@@ -82,6 +83,22 @@ class Nepactive(object):
         self.work_dir = os.getcwd()
         self.make_gpumd_task_first = True
         self.gpu_available = self.idata.get("gpu_available")
+        self.shock_run= self.idata.get("shock_run", True)
+        self.structure_prefix = self.idata.get("structure_prefix", self.work_dir)
+        if self.shock_run:
+            if os.path.exists(f"{self.work_dir}/nostrucnum"):
+                self.idata["stable"]["struc_num"] = 0
+                self.idata["structure_files"] = self.idata.get("structure_files",["POSCAR"])
+                self.idata["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0]])
+            else:
+                self.idata["stable"]["struc_num"] = 1
+                self.idata["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
+                self.idata["model_devi_general"][0]["structure_id"] = [[0,1]]
+        else:
+            self.idata["stable"]["struc_num"] = 0
+        # dlog.info(f"self.idata:{self.idata}")
+        # print(f"structure_files: {self.idata['structure_files']}")
+            
 
     def run(self):
         '''
@@ -118,8 +135,17 @@ class Nepactive(object):
         os.chdir(work_dir)
         stable_data:dict = self.idata.get("stable")
         stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
-        stable_run = StableRun(stable_data)
-        stable_run.calculate_properties()
+        stable_data["tfreq"] = self.idata.get("tfreq", None)
+        stable_data["pfreq"] = self.idata.get("pfreq", None)
+        stable_run = StableRun(self.idata,stable_data)
+        if not self.shock_run:
+            dlog.info(f"shock_run is False, skip calculate properties")
+            format = '%12.5f'
+            property = [0,0,0,0,0]
+            np.savetxt("properties.txt",np.array(property).reshape(1, -1),fmt=format,encoding="utf-8")
+            # np.savetxt('frame_properties.txt', data, fmt='%12.2f', header="shortest_d, molecule_num, molecule_density")
+        else:
+            stable_run.calculate_properties()
 
 
     def make_init_ase_run(self):
@@ -130,7 +156,7 @@ class Nepactive(object):
         # if_stable_run = self.idata.get("if_stable_run",False)
 
         work_dir = f"{self.work_dir}/init"
-        struc_dirs = []
+        # struc_dirs = []
         os.chdir(work_dir)
         # if if_stable_run:
         rho = self.idata.get("rho", None)
@@ -139,16 +165,46 @@ class Nepactive(object):
         if rho:
             dlog.info(f"rho is {rho}, will run stable run for rho={rho}")
             stable_data["rho"] = rho
-        stable_run = StableRun(stable_data)
+        # stable_data["struc_num"] = 1
+        stable_run = StableRun(self.idata, stable_data)
         stable_run.calculate_properties()
-        # stable_run.calculate_properties()
-        for ii in range(stable_run.struc_num):
+        if self.shock_run:
+            if not os.path.exists(f"{self.work_dir}/nostrucnum"):                
+                self.idata["structure_files"]=["POSCAR","init/struc.000/structure/POSCAR"]
+                self.idata["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0,1],[0,1]])
+                self.idata["model_devi_general"][0]["temperature"] = [3000]
+                self.idata["model_devi_general"][0]["ensemble"] = ["nphugo","nvt"]
+                try:
+                    for ii in range(stable_run.struc_num):
+                        os.chdir(work_dir)
+                        os.makedirs(f"struc.{ii:03d}",exist_ok=True)
+                        struc_dir = os.path.abspath(f"struc.{ii:03d}")
+                        # struc_dirs.append(struc_dir)
+                        os.chdir(struc_dir)
+                        stable_run.make_preparations()
+                except ValueError as e:
+                    dlog.warning(f"Error in make preparations: {e}")
+                    os.system(f"touch {self.work_dir}/nostrucnum")
+                    if self.shock_run:
+                        self.idata["stable"]["struc_num"] = 0
+                        self.idata["structure_files"] = self.idata.get("structure_files",["POSCAR"])
+                        self.idata["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0],[0]])
+                        self.idata["model_devi_general"][0]["ensemble"] = ["nphugo","nvt"]
+                        self.idata["model_devi_general"][0]["temperature"] = [3000]
+                        dlog.warning("Exception occurred, set struc_num to 0 and continue")
+
+        for ii in range(len(self.idata.get("structure_files",["POSCAR"]))):
+            if ii == 0:
+                continue
             os.chdir(work_dir)
             os.makedirs(f"struc.{ii:03d}",exist_ok=True)
             struc_dir = os.path.abspath(f"struc.{ii:03d}")
-            struc_dirs.append(struc_dir)
+            # struc_dirs.append(struc_dir)
             os.chdir(struc_dir)
-            
+            os.makedirs("structure",exist_ok=True)
+            dlog.info(f"self.idata:{self.idata}")
+            atoms = read(f"{self.structure_prefix}/{self.idata.get('structure_files')[ii]}")
+            write("structure/POSCAR",atoms)
             stable_run.make_preparations()
 
         # original_make = stable_data.get("original_make",True)
@@ -157,7 +213,7 @@ class Nepactive(object):
             os.chdir(work_dir)
             os.makedirs("original",exist_ok=True)
             struc_dir = os.path.abspath("original")
-            struc_dirs.append(struc_dir)
+            # struc_dirs.append(struc_dir)
             os.chdir(struc_dir)
             atoms = read(f"{self.work_dir}/POSCAR")
             os.makedirs("structure",exist_ok=True)
@@ -187,50 +243,25 @@ class Nepactive(object):
                 os.system(f"ln -snf {file} {task_dir}")
         
         os.chdir(work_dir)
+
+        run_py_task(work_dir=work_dir, gpu_available=self.gpu_available, task_per_gpu=self.idata.get("task_per_gpu",1))
         task_dirs = glob("./**/task.*", recursive=True)
         if task_dirs:
             task_dirs = [os.path.abspath(path) for path in task_dirs]
-
-        for index,task_dir in enumerate(task_dirs):
+        for task_dir in task_dirs:
             os.chdir(task_dir)
-            if os.path.exists("task_finished"):
-                atoms = read("out.traj", index=-1)
-                write_extxyz("final.xyz", atoms)
-                dlog.warning(f"{task_dir} has already been finished, skip it")
-                continue
-            # basename = os.path.basename(file)
-            basename = "ensemble.py"
-            gpu_id = self.gpu_available[index%len(self.gpu_available)]
-            env = os.environ.copy()
-            env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-            # Open subprocess and redirect stdout and stderr to a log file
-            log_file = os.path.join(task_dir, 'log')  # Log file path
-            with open(log_file, 'w') as log:
-                process = subprocess.Popen(
-                    [python_interpreter, basename], 
-                    stdout=log, 
-                    stderr=subprocess.STDOUT,  # Combine stderr with stdout
-                    env = env
-                )
-                processes.append((process, task_dir))  # Store the process and log file
+            ase_plt()
+            atoms = read("out.traj", index=-1)
+            write_extxyz("final.xyz", atoms)
+            dlog.info(f"Process completed successfully. Log saved at: {task_dir}/log")
 
-        # Wait for all subprocesses to complete and check for errors
-        for process, task_dir in processes:
-            process.wait()  # Wait for the process to complete
-            # Check for errors using the return code
-            if process.returncode != 0:
-                dlog.error(f"Process failed. Check the log at: {task_dir}/log")
-                raise RuntimeError(f"Process failed. Check the log at: {task_dir}/log")
-            else:
-                os.chdir(task_dir)
-                ase_plt()
-                os.system(f"touch {task_dir}/task_finished")
-                atoms = read("out.traj", index=-1)
-                write_extxyz("final.xyz", atoms)
-                dlog.info(f"Process completed successfully. Log saved at: {task_dir}/log")
-
-        # All scripts executed, proceed to the next step
         dlog.info("Initial training data generated")
+    
+    def run_py_tasks(self):
+        dlog.info(f"start run py tasks")
+        gpu_available = self.idata.get("gpu_available",[0,1,2,3])
+        self.task_per_gpu = self.idata.get("task_per_gpu",1)
+        run_py_task(gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)
 
     def make_data_extraction(self):
         '''
@@ -288,6 +319,28 @@ class Nepactive(object):
         write_extxyz("init/test.xyz", test)
         dlog.info("Initial training data extracted")
 
+    def parse_yaml(self,file):
+        with open(file, encoding='utf-8') as f:
+            data = yaml.safe_load(f)
+            # data = yaml.safe_load("in.yaml")
+        if self.shock_run:
+            if os.path.exists(f"{os.path.dirname(file)}/nostrucnum"):
+                data["stable"]["struc_num"] = 0
+                data["structure_files"] = self.idata.get("structure_files",["POSCAR"])
+                data["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0]])
+                data["model_devi_general"][0]["ensemble"] = ["nphugo","nvt"]
+                data["model_devi_general"][0]["temperature"] = [3000]
+                data["model_devi_general"][0]["structure_id"] = [[0],[0]]
+            else:
+                data["stable"]["struc_num"] = 1
+                data["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
+                data["model_devi_general"][0]["ensemble"] = ["nphugo","nvt"]
+                data["model_devi_general"][0]["temperature"] = [3000]
+                data["model_devi_general"][0]["structure_id"] = [[0,1],[0,1]]
+        else:
+            self.idata["stable"]["struc_num"] = 0
+        return data
+
     def make_loop_train(self):
         '''
         make loop training task
@@ -322,7 +375,7 @@ class Nepactive(object):
                 yaml_synchro = self.idata.get("yaml_synchro", False)
                 if yaml_synchro:
                     dlog.info(f"yaml_synchro is True, reread the in.yaml from {self.work_dir}/in.yaml")
-                    self.idata:dict = parse_yaml(f"{self.work_dir}/in.yaml")
+                    self.idata:dict = self.parse_yaml(f"{self.work_dir}/in.yaml")
                 if self.ii * max_tasks + jj <= iter_rec[0] * max_tasks + iter_rec[1] and not self.restart_gpumd:
                     continue
                 task_name = "task %02d" % jj
@@ -352,7 +405,7 @@ class Nepactive(object):
                 record_iter(record, self.ii, jj)
 
     def shock(self):
-        
+        work_dir = os.getcwd()
         stable_data = self.idata.get("stable", None)
         rhos = self.idata.get("rhos", None)
         if rhos is None:
@@ -373,6 +426,8 @@ class Nepactive(object):
 
         if not os.path.isfile("properties.txt"):
             raise ValueError("properties.txt is not found, please check your in.yaml")
+        
+        # shock_vels = []
         for rho in rhos:
             os.chdir(self.work_dir)
             os.makedirs(f"{rho}",exist_ok=True)
@@ -381,12 +436,16 @@ class Nepactive(object):
             dlog.info(f"Running shock velocity test for rho={rho}")
             os.system(f"ln -snf {self.work_dir}/POSCAR POSCAR")
             os.system(f"ln -snf {self.work_dir}/properties.txt properties.txt")
-            stable_task = StableRun(stable_data)
+            stable_task = StableRun(self.idata, stable_data)
             stable_task.run()
+            # shock_vels.append(stable_task.shock_vels)
             dlog.info(f"Shock velocity test for rho={rho} completed")
+            with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
+                np.savetxt(f, np.array(stable_task.shock_vels), fmt='%.3f', header='Shock velocities (km/s) for each rho')
 
 
     def shock_vel_test(self):
+
         work_dir = os.path.abspath(os.path.join(self.iter_dir, "03.shock"))
         os.makedirs(work_dir, exist_ok=True)
         atoms = read(f"{self.work_dir}/POSCAR")
@@ -418,18 +477,18 @@ class Nepactive(object):
             dlog.info(f"rho is {rho}, will run shock velocity test for rho={rho}")
             stable_data["rho"] = rho
 
-        stable_task = StableRun(stable_data)
+        stable_task = StableRun(self.idata, stable_data)
         stable_task.run()
         with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
             f.write(f"#{self.ii}\n")
-            np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
+            np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (km/s) for each rho')
         dlog.info(f"Shock velocity test completed, results is {stable_task.shock_vels} km/s")
 
     def run_nep_train(self):
         '''
         run nep training
         '''
-        train_steps = self.idata.get("train_steps", 5000)
+        train_steps = self.idata.get("train_steps", 10000)
         work_dir = os.path.abspath(os.path.join(self.iter_dir, "00.nep"))
         pot_num = self.idata.get("pot_num", 4)
         pot_inherit:bool = self.idata.get("pot_inherit", True)
@@ -494,21 +553,27 @@ class Nepactive(object):
     def post_label_task(self):
         '''
         '''
+        if not self.shock_run:
+            dlog.info("shock_run is False, skip shock velocity test")
+            return
         test_interval = self.idata.get("shock_test_interval", 1)
         test_begin_step = self.idata.get("shock_test_begin_step", 400000)
 
         self.run_steps = int(np.loadtxt(f"{self.work_dir}/steps.txt",ndmin=1,encoding="utf-8")[-1])
-        if self.run_steps > test_begin_step and self.ii%test_interval == 0:
+        if (self.run_steps > test_begin_step) and (self.ii%test_interval == 0):
             dlog.info(f"run_steps is {self.run_steps}, will run shock velocity test")
             self.shock_vel_test()
         if os.path.exists(f"{self.work_dir}/shock_vel.txt"):    
-            shock_data = np.loadtxt(f"{self.work_dir}/shock_vel.txt", ndmin=1, encoding="utf-8")
+            shock_data = np.loadtxt(f"{self.work_dir}/shock_vel.txt", ndmin=2, encoding="utf-8")
             if len(shock_data) > 3:
                 Dv_error = np.abs(shock_data[-3:,0].max()- shock_data[-3:,0].min())/shock_data[-3:,0].mean()*100
                 dlog.info(f"Shock velocity error is {Dv_error:.2f}%")
                 accuracy = self.idata.get("accuracy", 1)
                 if Dv_error < accuracy:
                     dlog.info(f"Reach accuracy {accuracy}%, job finished successfully, will stop training process")
+                    fs = glob(f"{self.work_dir}/iter.{self.ii:06d}/03.shock/**/shock_vel.png",recursive=True)
+                    fs.sort()
+                    os.system(f"cp {fs[-1]} {self.work_dir}/shock_vel.png")
                     exit()
 
     def post_nep_train(self):
@@ -683,14 +748,19 @@ class Nepactive(object):
 
         task_dicts = []
         ensembles = model_devi.get("ensembles",["nphugo"])
+        replicate_cell = model_devi.get("replicate_cell","1 1 1")
+        nums = list(map(int, replicate_cell.split()))
+        mult_power = np.prod(nums)
         for ensemble_index,ensemble in enumerate(ensembles):
+
             structure_id = model_devi.get("structure_id",[[0]])[ensemble_index]
             all_dict = {}
             assert structure_files is not None
             structure = [structure_files[ii] for ii in structure_id] #####################################################
             all_dict["structure"] = structure
             time_step = model_devi.get("time_step")
-
+            # print("ensembles =", ensembles)
+            # print("structure_id raw =", model_devi.get("structure_id", [[0]]))
             if not time_step:
                 time_step = time_step_general
 
@@ -707,14 +777,14 @@ class Nepactive(object):
                     all_dict["pressure"] = pressure
                     assert pressure is not None
                 if ensemble == "nphugo":
-                    all_dict["e0"] = e0
+                    all_dict["e0"] = e0 * mult_power
                     all_dict["p0"] = p0
-                    all_dict["v0"] = v0
+                    all_dict["v0"] = v0 * mult_power
             elif ensemble == "msst":
                 v_shock:list = model_devi.get("v_shock",[9.0])       #
                 qmass:list = model_devi.get("qmass",[100000])           #
                 viscosity:list = model_devi.get("viscosity",[10])   #
-                shock_direction = model_devi.get("shock_direction","x")
+                shock_direction = model_devi.get("shock_direction","y")
                 all_dict["v_shock"] = v_shock
                 all_dict["qmass"] = qmass
                 all_dict["viscosity"] = viscosity
@@ -734,7 +804,7 @@ class Nepactive(object):
             dump_freq = max(1,floor(run_steps/frames_pertask))
 
             model_devi_task_numbers = len(task_dicts)
-            replicate_cell = model_devi.get("replicate_cell","1 1 1")
+
             # nep_file = self.idata.get("nep_file","../../00.nep/task.000000/nep.txt")
 
         index = 0
@@ -818,9 +888,9 @@ class Nepactive(object):
         else:
             self.model_devi_general_id = 0
         
-        if self.model_devi_general_id >= len(model_devi_general):
-            dlog.info(f"finished")
-            exit()
+        # if self.model_devi_general_id >= len(model_devi_general):
+        #     dlog.info(f"finished")
+            # exit()
         
         model_devi = model_devi_general[self.model_devi_general_id] 
 
@@ -886,7 +956,7 @@ class Nepactive(object):
             'shortest_d': self.idata.get("shortest_d", 0.5),
             'analyze_range': self.idata.get("analyze_range", [0.5, 1.0]),
             'max_run_steps': self.idata.get("max_run_steps", 1200000),
-            'max_iter': self.idata.get("max_iter", 20),
+            'max_iter': self.idata.get("max_iter", 40),
             'time_step': self.idata.get("time_step")
         }
         
@@ -1193,7 +1263,7 @@ class Nepactive(object):
         """
         self.gpu_available = self.idata.get("gpu_available", [0, 1, 2, 3])
         self.gpu_per_task = self.idata.get("gpu_per_task", 1)
-        python_interpreter = self.idata.get("python_interpreter")
+        python_interpreter = self.idata.get("python_interpreter", "python")
         processes = []
         
         # 限制同时运行的任务数量
@@ -1316,8 +1386,8 @@ class Nepactive(object):
         thermo_new = compute_volume_from_thermo(thermo)[:,[0,2,3,-1]]
         frame_property = np.concatenate((property_list_np,thermo_new),axis=1)
 
-        molecule_data = analyze_trajectory("dump.xyz", index=":")
-        molecule_num = molecule_data.sum(axis=1).to_numpy()-molecule_data[:,0].to_numpy()
+        molecule_data = analyze_trajectory("dump.xyz", index=":").fillna(0)
+        molecule_num = molecule_data.sum(axis=1).to_numpy()-molecule_data.iloc[:,0].to_numpy()
         molecule_density = molecule_num / frame_property[:,7]
         frame_property = np.hstack((frame_property, molecule_num.reshape(-1, 1)))
         frame_property = np.hstack((frame_property, molecule_density.reshape(-1, 1)))

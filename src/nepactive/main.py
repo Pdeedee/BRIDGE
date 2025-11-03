@@ -26,7 +26,7 @@ def main():
         task = Remotetask(idata=idata)
         task.run_submission()
     elif args.stable:
-        task = StableRun(idata=idata.get("stable"))
+        task = StableRun(idata=idata)
         task.run()
     elif args.OB:
         # task = OB(idata=idata)

@@ -1,5 +1,6 @@
 from nepactive.nphugo import MTTK, NPHugo
-from nepactive.random_stable import solve_molecular_distribution
+# from nepactive.random_stable import solve_molecular_distribution
+from nepactive.stable_product import solve_molecular_distribution
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from ase import Atoms,units
 import numpy as np
@@ -18,30 +19,34 @@ from nepactive.logger import MDLogger
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.md.nvtberendsen import NVTBerendsen
 from ase.build import make_supercell
-from nepactive.template import nvt_pytemplate,nphugo_pytemplate,nphugo_template,shock_test_template
+from nepactive.template import nvt_pytemplate,nphugo_pytemplate,nphugo_template,shock_test_template,npt_pytemplate
 from nepactive.plt import ase_plt,gpumdplt
-from nepactive.tools import shock_calculate,run_gpumd_task,compute_volume_from_thermo
+from nepactive.tools import shock_calculate,run_gpumd_task,run_py_task,compute_volume_from_thermo
 from ase.io.extxyz import write_extxyz
 from nepactive.tools import  get_shortest_distance
 from nepactive.extract import analyze_trajectory
 
 class StableRun:
-    def __init__(self, idata:dict):
+    def __init__(self, idata:dict, sdata:dict=None):
         self.idata = idata
-        self.struc_file_name = os.path.abspath(self.idata.get("structure","POSCAR"))
+        self.sdata = sdata
+        if self.sdata is None:
+            self.sdata = idata.get("stable_run",{})
+        self.struc_file_name = os.path.abspath(self.sdata.get("structure","POSCAR"))
         self.atoms = read(self.struc_file_name)
         calculator=MatterSimCalculator(device="cuda")
         self.atoms._calc = calculator
-        self.struc_num = self.idata.get("struc_num")
+        self.struc_num = self.sdata.get("struc_num")
         self.work_dir = os.getcwd()
-        self.pressure_list = self.idata.get("pressures",[20,25,30,35,40,45])
+        self.pressure_list = self.sdata.get("pressures",[20,25,30,35,40,45])
         cell = self.atoms.get_cell()
         cell_complete = self.atoms.get_cell(complete=True)
-        self.analyze_range = self.idata.get("analyze_range",[0.5,1])
+        self.analyze_range = self.sdata.get("analyze_range",[0.5,1])
         self.molecule_dicts = []
-        self.r_rho = self.idata.get("rho",None)
+        self.r_rho = self.sdata.get("rho",None)
+        self.shock_run = self.sdata.get("shock_run",True)
         dlog.info(f"cell: {cell},cell_complete: {cell_complete}")
-        dlog.info(f"StableRun: {self.idata}")
+        dlog.info(f"StableRun: {self.sdata}")
 
     def calculate_properties(self):
         dlog.info(f"start calculating properties")
@@ -63,9 +68,9 @@ class StableRun:
             os.makedirs("structure",exist_ok=True)
             os.chdir("structure")
             if not os.path.exists("task_finished"):
-                nvt_pyfile = nvt_pytemplate.format(structure=self.struc_file_name,temperature = 300, steps = 2000)
-                python_interpreter = self.idata.get("python_interpreter")
-                print(f"python interpreter:{python_interpreter},self.idata: {self.idata}")
+                nvt_pyfile = nvt_pytemplate.format(structure=self.struc_file_name,temperature = 300, steps = 10000)
+                python_interpreter = self.sdata.get("python_interpreter")
+                print(f"python interpreter:{python_interpreter},self.idata: {self.sdata}")
                 with open("ensemble.py","w") as f:
                     f.write(nvt_pyfile)
                 env = os.environ.copy()
@@ -107,16 +112,17 @@ class StableRun:
         """
         根据self.atoms的原子种类生成稳定的产物初始结构，需要指定生成多少个
         """
-        self.pot = self.idata.get("pot","mattersim")
+        self.pot = self.sdata.get("pot","mattersim")
         if self.pot == "nep":
-            self.nep = self.idata.get("nep",None)
+            self.nep = self.sdata.get("nep",None)
             if os.path.exists("nep.txt"):
                 self.nep = os.path.abspath("nep.txt")
             assert self.nep is not None, "nep is None"
 
-        dlog.info(f"StableRun: {self.idata}")
+        dlog.info(f"StableRun: {self.sdata}")
         self.calculate_properties()
         dlog.info(f"start stable run")
+
 
         self.make_tasks()
         os.chdir(self.work_dir)
@@ -137,7 +143,7 @@ class StableRun:
 
     def run_tasks(self):
         if self.pot == "mattersim":
-            self.run_pytasks()
+            self.run_py_tasks()
         elif self.pot == "nep":
             self.run_gpumd_tasks()
         else:
@@ -153,7 +159,7 @@ class StableRun:
             os.chdir(struc_dir)
             self.make_preparations()
 
-        original_make = self.idata.get("original_make",True)
+        original_make = self.sdata.get("original_make",True)
         if original_make:
             os.chdir(self.work_dir)
             os.makedirs("original",exist_ok=True)
@@ -164,111 +170,6 @@ class StableRun:
             os.makedirs("structure",exist_ok=True)
             write(f"structure/POSCAR",atoms)
             self.make_preparations()
-
-    def make_preparations(self):
-        new = False
-        max_try = 0
-
-        struc_dir = os.getcwd()
-
-        error = 1
-        if not os.path.exists("structure/POSCAR"):           
-            while (not new) or (error != 0):
-                molecule_dict,error = self.make_molecule_dict()
-                if molecule_dict not in self.molecule_dicts:
-                    self.molecule_dicts.append(molecule_dict)
-                    new = True
-                    dlog.info(f"molecule_dict {molecule_dict} is new")
-                else:
-                    max_try += 1
-                    dlog.info(f"molecule_dict {molecule_dict} already exists, try again")
-                    if max_try > 10:
-                        raise ValueError("Too many tries, please check the molecule_dict")
-
-            os.makedirs("structure",exist_ok=True)
-            os.chdir("structure")
-            
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            parent_dir = os.path.dirname(os.path.dirname(current_dir))
-            source_file = os.path.join(parent_dir, 'molecules')
-
-            if not os.path.isfile("POSCAR"):
-                os.system(f"cp {source_file}/*pdb .")
-                self.make_structure(molecule_dict,name="POSCAR")
-                dlog.info(f"make structure for {molecule_dict}")
-
-        os.chdir(struc_dir)
-        if not os.path.exists("task.000"):
-            self.make_pytasks()
-
-    def run_pytasks(self):
-        """
-        运行任务
-        """
-        os.chdir(self.work_dir)
-        task_dirs = glob("*/**/task.*",recursive=True)
-        task_dirs = [os.path.abspath(task_dir) for task_dir in task_dirs]
-        if not task_dirs:
-            raise ValueError("No task dir found")
-        task_dirs.sort()
-        
-        task_per_gpu = self.idata.get("task_per_gpu",4)
-        gpu_available = self.idata.get("gpu_available",[0,1,2,3])
-        tasknum_pertime = task_per_gpu * len(gpu_available)
-        
-        # 将任务分成多个批次，每个批次最多运行tasknum_pertime个任务
-        batches = [task_dirs[i:i+tasknum_pertime] for i in range(0, len(task_dirs), tasknum_pertime)]
-        dlog.info(f"Total {len(task_dirs)} tasks, {len(batches)} batches, {tasknum_pertime} tasks per batch")
-        for batch in batches:
-            processes = []
-            original_dir = os.getcwd()
-            
-            # 启动当前批次的所有任务
-            for index, task_dir in enumerate(batch):
-                os.chdir(original_dir)  # 返回原始目录
-                
-                if os.path.exists(os.path.join(task_dir, "task_finished")):
-                    continue
-                os.chdir(task_dir)
-                
-                python_interpreter = self.idata.get("python_interpreter")
-                gpu_id = gpu_available[index % len(gpu_available)]
-                env = os.environ.copy()
-                env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-                
-                log_file = os.path.join(task_dir, 'log')
-                with open(log_file, 'w') as log:
-                    process = subprocess.Popen(
-                        [python_interpreter, "ensemble.py"], 
-                        stdout=log, 
-                        stderr=subprocess.STDOUT,
-                        env=env
-                    )
-                    processes.append((process, task_dir))
-            
-            if not processes:
-                continue
-
-            # 等待当前批次的所有进程完成
-            os.chdir(original_dir)  # 返回原始目录
-            for process, task_dir in processes:
-                process.wait()
-                if process.returncode != 0:
-                    dlog.error(f"Process failed. Check the log at: {os.path.join(task_dir, 'log')}")
-                    raise RuntimeError(f"Process failed. Check the log at: {os.path.join(task_dir, 'log')}")
-                else:
-                    os.system(f"touch {task_dir}/task_finished")
-                    dlog.info(f"Process completed successfully. Log saved at: {os.path.join(task_dir, 'log')}")
-
-    def make_structure(self,molecule_dict:dict,name):
-        """
-        根据molecule_dict生成结构
-        """
-        dlog.info(f"start make structure according to {molecule_dict}")
-        lattice = np.power(self.volume, 1/3)
-        cell = [lattice,lattice,lattice]
-
-        make_structure(molecules=molecule_dict, cell=cell, name=name)
 
     def make_molecule_dict(self):
         """
@@ -287,7 +188,116 @@ class StableRun:
             max_try += 1
         molecules_dict = result["solution"]
         dlog.info(f"molecule_dict: {molecules_dict},error: {result['error']}")
-        return molecules_dict,result["error"]
+        return molecules_dict,result["error"],result["total_energy"]
+
+    def make_preparations(self):
+        new = False
+        max_try = 0
+
+        struc_dir = os.getcwd()
+        molecule_dict_list = []
+        error = 1
+        if not os.path.exists("structure/POSCAR"):
+            while (error != 0) or (max_try < 50):
+                molecule_dict,error,energy = self.make_molecule_dict()
+                molecule_dict_list.append({"dict":molecule_dict,"error":error,"energy":energy})
+                max_try += 1
+                dlog.info(f"molecule_dict {molecule_dict} already exists, try again")
+                if max_try > 100:
+                    raise ValueError("Too many tries, please check the molecule_dict")
+            
+            index = np.argmin([item["energy"] for item in molecule_dict_list if item["error"]==0])
+            molecule_dict = molecule_dict_list[index]["dict"]
+            dlog.info(f"final molecule_dict: {molecule_dict_list[index]}")
+            os.makedirs("structure",exist_ok=True)
+            os.chdir("structure")
+            
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            parent_dir = os.path.dirname(os.path.dirname(current_dir))
+            source_file = os.path.join(parent_dir, 'molecules')
+
+            if not os.path.isfile("POSCAR"):
+                os.system(f"cp {source_file}/*pdb .")
+                self.make_structure(molecule_dict,name="POSCAR")
+                dlog.info(f"make structure for {molecule_dict}")
+
+        os.chdir(struc_dir)
+        if not os.path.exists("task.000"):
+            self.make_pytasks()
+
+    # def run_pytasks(self):
+    #     """
+    #     运行任务
+    #     """
+    #     os.chdir(self.work_dir)
+    #     task_dirs = glob("*/**/task.*",recursive=True)
+    #     task_dirs = [os.path.abspath(task_dir) for task_dir in task_dirs]
+    #     if not task_dirs:
+    #         raise ValueError("No task dir found")
+    #     task_dirs.sort()
+        
+    #     task_per_gpu = self.idata.get("task_per_gpu",4)
+    #     gpu_available = self.idata.get("gpu_available",[0,1,2,3])
+    #     tasknum_pertime = task_per_gpu * len(gpu_available)
+        
+    #     # 将任务分成多个批次，每个批次最多运行tasknum_pertime个任务
+    #     batches = [task_dirs[i:i+tasknum_pertime] for i in range(0, len(task_dirs), tasknum_pertime)]
+    #     dlog.info(f"Total {len(task_dirs)} tasks, {len(batches)} batches, {tasknum_pertime} tasks per batch")
+    #     for batch in batches:
+    #         processes = []
+    #         original_dir = os.getcwd()
+            
+    #         # 启动当前批次的所有任务
+    #         for index, task_dir in enumerate(batch):
+    #             os.chdir(original_dir)  # 返回原始目录
+                
+    #             if os.path.exists(os.path.join(task_dir, "task_finished")):
+    #                 continue
+    #             os.chdir(task_dir)
+                
+    #             python_interpreter = self.sdata.get("python_interpreter")
+    #             gpu_id = gpu_available[index % len(gpu_available)]
+    #             env = os.environ.copy()
+    #             env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+                
+    #             log_file = os.path.join(task_dir, 'log')
+    #             with open(log_file, 'w') as log:
+    #                 process = subprocess.Popen(
+    #                     [python_interpreter, "ensemble.py"], 
+    #                     stdout=log, 
+    #                     stderr=subprocess.STDOUT,
+    #                     env=env
+    #                 )
+    #                 processes.append((process, task_dir))
+            
+    #         if not processes:
+    #             continue
+
+    #         # 等待当前批次的所有进程完成
+    #         os.chdir(original_dir)  # 返回原始目录
+    #         for process, task_dir in processes:
+    #             process.wait()
+    #             if process.returncode != 0:
+    #                 dlog.error(f"Process failed. Check the log at: {os.path.join(task_dir, 'log')}")
+    #                 raise RuntimeError(f"Process failed. Check the log at: {os.path.join(task_dir, 'log')}")
+    #             else:
+    #                 os.system(f"touch {task_dir}/task_finished")
+    #                 dlog.info(f"Process completed successfully. Log saved at: {os.path.join(task_dir, 'log')}")
+    def run_py_tasks(self):
+        dlog.info(f"start run py tasks")
+        gpu_available = self.idata.get("gpu_available",[0,1,2,3])
+        self.task_per_gpu = self.idata.get("task_per_gpu",1)
+        run_py_task(gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)
+
+    def make_structure(self,molecule_dict:dict,name):
+        """
+        根据molecule_dict生成结构
+        """
+        dlog.info(f"start make structure according to {molecule_dict}")
+        lattice = np.power(self.volume, 1/3)
+        cell = [lattice,lattice,lattice]
+
+        make_structure(molecules=molecule_dict, cell=cell, name=name)
 
     def make_pytasks(self):
         """ 
@@ -295,18 +305,34 @@ class StableRun:
         """
         work_dir = os.getcwd()
         task_dirs = []
-        steps = self.idata.get("steps",400000)
+        steps = self.sdata.get("steps",400000)
+        ensemble = self.idata["model_devi_general"][0].get("ensembles",["nphugo"])[0]
         self.total_time = steps * 0.2
+        dlog.info(f"Makes totally {len(self.pressure_list)} tasks for ensemble {ensemble}")
+        # dlog.info(f"pressure_list: {self.pressure_list}")
         for ii,_ in enumerate(self.pressure_list):
+            dlog.info(f"make task for pressure {self.pressure_list[ii]} GPa")
             os.chdir(work_dir)
             task_dir = os.path.join(work_dir,f"task.{ii:03d}")
             task_dirs.append(task_dir)
             os.makedirs(task_dir,exist_ok=True)
             os.chdir(task_dir)
-            dump_freq = self.idata.get("dump_freq",100)
-
-            py_file = nphugo_pytemplate.format(structure = "../structure/POSCAR",e0=self.energy,dump_freq = dump_freq,
-                                                    v0=self.r_v, pressure=self.pressure_list[ii], steps = steps)
+            dump_freq = self.sdata.get("dump_freq",100)
+            pfreq = self.sdata.get("pfreq",None)
+            tfreq = self.sdata.get("tfreq",None)
+            timestep = self.sdata.get("time_step",0.2)
+            temperature = self.idata["model_devi_general"][0].get("temperature",[3000])[-1]
+            if ensemble == "nphugo":
+                py_file = nphugo_pytemplate.format(structure = "../structure/POSCAR",e0=self.energy,dump_freq = dump_freq,p0=0,
+                                                    v0=self.r_v, pressure=self.pressure_list[ii], steps = steps, pfreq=pfreq, tfreq=tfreq)
+            elif ensemble == "nvt":
+                py_file = nvt_pytemplate.format(structure = "../structure/POSCAR",temperature = temperature, dump_freq = dump_freq, steps = steps)
+            elif ensemble == "npt":
+                py_file = npt_pytemplate.format(structure = "../structure/POSCAR",temperature = temperature, pressure=self.pressure_list[ii], 
+                                                dump_freq = dump_freq, steps = steps, time_step=timestep)
+            elif ensemble == "msst":
+                py_file = nphugo_pytemplate.format(structure = "../structure/POSCAR",e0=self.energy,dump_freq = dump_freq,p0=0,
+                                                    v0=self.r_v, pressure=self.pressure_list[ii], steps = steps, pfreq=pfreq, tfreq=tfreq)
             with open("ensemble.py","w",encoding='utf-8') as f:
                 f.write(py_file)
 
@@ -328,7 +354,7 @@ class StableRun:
         thermos = []
         # thermo = None
         thermo_averages = []
-        gpumd_steps = self.idata.get("gpumd_steps",400000)
+        gpumd_steps = self.sdata.get("gpumd_steps",400000)
         self.total_time = gpumd_steps * 0.2
         # self.r_v = self.rho0 / self.r_rho * self.volume
         for task_dir in task_dirs:
@@ -384,7 +410,7 @@ class StableRun:
             volume = thermo_branch[:,3]
             pressure = thermo_branch[:,2]
             dlog.info(f"volume: {volume}, pressure: {pressure}, v0: {self.r_v}, rho: {self.r_rho}, initial volume: {self.volume}")
-            shock_vel = shock_calculate(volume=volume,pressure=pressure,v0=self.r_v, rho=self.r_rho)
+            shock_vel = shock_calculate(volume=volume,pressure=pressure,v0=self.r_v * self.mult_power, rho=self.r_rho)
             shock_vels.append(shock_vel)
         os.chdir(self.work_dir)
         self.shock_vels = np.array(shock_vels)
@@ -443,8 +469,8 @@ class StableRun:
     def make_gpumd_tasks(self):
         os.chdir(self.work_dir)
         task_dirs = []
-        struc_prefix = self.idata.get("struc_prefix",os.getcwd())
-        strucs = self.idata.get("structure_files",[])
+        struc_prefix = self.sdata.get("struc_prefix",os.getcwd())
+        strucs = self.sdata.get("structure_files",[])
         # strucs = self.idata.get("structure_files",[])
         assert strucs != [], "structure_files is empty"
         if not os.path.isabs(strucs[0]):
@@ -459,12 +485,15 @@ class StableRun:
 
     def make_gpumd_tasks_for_struc(self,struc,ii):
         work_dir = os.path.abspath(os.getcwd())
-        self.gpumd_pressure_list = self.idata.get("gpumd_pressure_list",[20,25,30,35,40,45,50,60])
-        gpumd_steps = self.idata.get("gpumd_steps",400000)
+        self.gpumd_pressure_list = self.sdata.get("gpumd_pressure_list",[20,25,30,35,40,45,50,60])
+        gpumd_steps = self.sdata.get("gpumd_steps",1000000)
         dump_freq = gpumd_steps//2500
         dlog.info(f"r_v: {self.r_v}, r_rho: {self.r_rho}, rho0: {self.rho0}, v0: {self.volume}")
         # os.system("rm -rf task.*")
         real_p0 = self.idata.get("real_p0",False)
+        replicate_cell = self.idata.get("replicate_cell","1 1 1")
+        nums = list(map(int, replicate_cell.split()))
+        self.mult_power = np.prod(nums)
         if not real_p0:
             dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
             self.p0 = 0
@@ -485,10 +514,10 @@ class StableRun:
                 time_step = 0.2,
                 run_steps = gpumd_steps,
                 dump_freq = dump_freq,
-                replicate_cell = "1 1 1",
+                replicate_cell = replicate_cell,
                 pressure = self.gpumd_pressure_list[ii],
-                e0 = self.energy,
-                v0 = self.r_v,
+                e0 = self.energy * self.mult_power,
+                v0 = self.r_v* self.mult_power,
                 p0 = self.p0,
                 pperiod = 2000
             )
@@ -497,5 +526,5 @@ class StableRun:
 
     def run_gpumd_tasks(self):
         gpu_available = self.idata.get("gpu_available",[0,1,2,3])
-        self.task_per_gpu = self.idata.get("task_per_gpu",1)
+        self.task_per_gpu = self.idata.get("task_per_gpu",2)
         run_gpumd_task(gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)

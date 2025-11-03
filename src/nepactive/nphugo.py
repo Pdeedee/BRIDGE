@@ -62,7 +62,7 @@ class MTTK(MolecularDynamics):
         pfreq:Optional[int]=None,
         t_start: float = None,
         p_start = None,
-        tfreq=0.025,
+        tfreq=None,
         pmode: str = "iso",
         tchain: int = 2,
         pchain: int = 2,
@@ -101,6 +101,8 @@ class MTTK(MolecularDynamics):
             timestep=timestep,
             **kwargs,
         )
+        if not tfreq:
+            tfreq = 0.025
         self.pstart = self.pstop = self.pfreq = self.p_target = self.pflag = [0]*6
         assert self.masses.shape == (len(self.atoms), 1)
         self.atoms = atoms
@@ -539,7 +541,7 @@ class NPHugo(MTTK):
         self.p0 = p0
         self.v0 = v0
         self.e0 = e0
-        if not self.p0:
+        if self.p0 is None:
             self.p0 = self.atoms.get_stress(voigt=False).trace()/3
         if not self.v0:
             self.v0 = self.atoms.get_volume()
@@ -561,7 +563,7 @@ class NPHugo(MTTK):
               f"p_stop:{self.p_stop},p_mode:{self.pmode},tchain:{self.tchain},pchain:{self.pchain}")
 
     def get_target_temp(self):
-        t_target = self.atoms.get_temperature() + self.compute_hugoniot()
+        t_target = max(300, self.atoms.get_temperature() + self.compute_hugoniot())
         return t_target
         
     @property
@@ -581,7 +583,40 @@ class NPHugo(MTTK):
         dhugo = 0.5*(self.p0 + self.p)*(self.v0-self.volume)+self.e0-self.atoms.get_total_energy()
         dhugo /= self.tdof*units.kB
         self.dhugo = dhugo
+        # print(f"part1:{0.5*(self.p0 + self.p)*(self.v0-self.volume)},part2:{self.e0-self.atoms.get_total_energy()},dhugo:{dhugo}")
+        # print(f"p:{self.p/units.GPa},v:{self.volume},e:{self.atoms.get_total_energy()},v0:{self.v0},e0:{self.e0},p0:{self.p0/units.GPa}")
         return dhugo
+    
+    # def compute_hugoniot(self):
+    #     self.couple_stress()
+    #     if self.pmode == "iso":
+    #         self.p = -self.atoms.get_stress(voigt=False).trace()/3
+    #     elif self.pmode == "x":
+    #         self.p = -self.atoms.get_stress(voigt=False)[0, 0]
+    #     elif self.pmode == "y":
+    #         self.p = -self.atoms.get_stress(voigt=False)[1, 1]
+    #     elif self.pmode == "z":
+    #         self.p = -self.atoms.get_stress(voigt=False)[2, 2]
+        
+    #     # 分步计算，添加调试信息
+    #     pressure_term = 0.5 * (self.p0 + self.p)
+    #     volume_term = (self.v0 - self.volume)
+    #     part1 = pressure_term * volume_term
+    #     part2 = self.e0 - self.atoms.get_total_energy()
+        
+    #     print(f"Debug: p0={self.p0}, p={self.p}")
+    #     print(f"Debug: v0={self.v0}, v={self.volume}")
+    #     print(f"Debug: pressure_term={pressure_term}")
+    #     print(f"Debug: volume_term={volume_term}")
+    #     print(f"Debug: part1_before_unit={part1}")
+        
+    #     dhugo = part1 + part2
+    #     dhugo /= self.tdof*units.kB
+    #     self.dhugo = dhugo
+        
+    #     print(f"part1:{part1},part2:{part2},dhugo:{dhugo}")
+    #     print(f"p:{self.p/units.GPa},v:{self.volume},e:{self.atoms.get_total_energy()},v0:{self.v0},e0:{self.e0}")
+    #     return dhugo
     
     def step(self):
         self.first_half()

@@ -494,7 +494,7 @@ class Nepactive_OB(Nepactive):
             dlog.info(f"Running shock velocity test for rho={rho}")
             os.system(f"ln -snf {self.work_dir}/POSCAR POSCAR")
             os.system(f"ln -snf {self.work_dir}/properties.txt properties.txt")
-            stable_task = StableRun_OB(stable_data)
+            stable_task = StableRun(stable_data)
             stable_task.run()
             dlog.info(f"Shock velocity test for rho={rho} completed")
 

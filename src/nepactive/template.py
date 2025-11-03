@@ -35,13 +35,14 @@ run			    {run_steps}
 """
 
 npt_template = """
+replicate       {replicate_cell}
 potential		nep.txt
 minimize sd 1.0e-6 10000
 
 time_step	    {time_step}
 velocity		{temperature}
 
-ensemble        npt_mttk {temperature} {temperature} iso {pressure} {pressure} tperiod 200 pperiod 5000
+ensemble        npt_mttk temp {temperature} {temperature} iso {pressure} {pressure} tperiod 200 pperiod 5000
 
 dump_thermo		{dump_freq}
 dump_exyz       {dump_freq}
@@ -88,6 +89,17 @@ cd {task_dir}
 if [ ! -f task_finished ] ;then 
 rm -f dump.xyz thermo.out log
 gpumd > log 2>&1
+if test $? -eq 0; then touch task_finished;fi
+fi
+
+"""
+
+pytask_template = """
+cd {work_dir}
+cd {task_dir}
+if [ ! -f task_finished ] ;then 
+rm -f md.log out.traj log
+python ensemble.py > log 2>&1
 if test $? -eq 0; then touch task_finished;fi
 fi
 
@@ -150,10 +162,48 @@ dyn.run(steps)
 
 """
 
+npt_pytemplate = """
+from ase.io import  read,write
+from ase import Atoms,units
+from nepactive.logger import MDLogger
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from ase.io.trajectory import Trajectory
+import numpy as np
+from ase.optimize import LBFGS
+from ase.constraints import UnitCellFilter
+from nepactive.nphugo import NPHugo, MTTK
+from ase.io import  read,write
+from ase.md.nvtberendsen import NVTBerendsen
+from mattersim.forcefield import MatterSimCalculator
+calculator=MatterSimCalculator(device="cuda")
+atoms = read("{structure}")
+# 使用元素符号排序原子
+elements = atoms.get_chemical_symbols()
+sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
+atoms.calc = calculator
+opt = LBFGS(atoms)
+opt.run(fmax=0.05,steps=40)
+steps = {steps}
+write("opt.pdb",atoms)
+temperature_K = {temperature}
+MaxwellBoltzmannDistribution(atoms,temperature_K=temperature_K)
+traj = Trajectory('out.traj', 'w', atoms)
+# pfactor= 100 #120
+pressure = {pressure} * units.GPa
+timestep = 0.2 * units.fs
+dyn = MTTK(atoms,timestep=0.2*units.fs,run_steps=steps,t_stop=temperature_K,p_stop=pressure,pmode="iso", tchain=3, pchain=3)
+# dyn = NVTBerendsen(atoms, timestep=0.1*units.fs, temperature_K=300*units.kB, taut=0.5*1000*units.fs)
+dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
+        volume=True, mode="w"), interval=10)
+dyn.attach(traj.write, interval=10)
+dyn.run(steps)
+
+"""
+
 continue_pytemplate = """
 from ase.io import  read,write
 from ase import Atoms,units
-from ase.md import MDLogger
+from nepactive.logger import MDLogger
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.io.trajectory import Trajectory
 import numpy as np
@@ -185,7 +235,46 @@ dyn.run(steps)
 
 nphugo_pytemplate = """
 from ase.io import  read,write
-from ase.md import MDLogger
+from nepactive.logger import MDLogger
+from ase import units
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from ase.io.trajectory import Trajectory
+import numpy as np
+from ase.optimize import LBFGS
+from ase.constraints import UnitCellFilter
+from nepactive.nphugo import NPHugo, MTTK
+from ase.io import  read,write
+from mattersim.forcefield import MatterSimCalculator
+calculator=MatterSimCalculator(device="cuda")
+atoms = read("{structure}")
+# 使用元素符号排序原子
+elements = atoms.get_chemical_symbols()
+sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
+atoms.calc = calculator
+# ucf = UnitCellFilter(atoms,hydrostatic_strain=True)
+opt = LBFGS(atoms)
+opt.run(fmax=0.05,steps=40)
+steps = {steps}
+write("opt.pdb",atoms)
+temperature_K = 300
+MaxwellBoltzmannDistribution(atoms,temperature_K=temperature_K)
+traj = Trajectory('out.traj', 'w', atoms)
+# pfactor= 100 #120
+timestep = 0.2 * units.fs
+e0 = {e0}
+p0 = {p0}
+v0 = {v0}
+pressure = {pressure} * units.GPa
+dyn = NPHugo(atoms, e0 = e0, p0 = p0, v0=v0, p_stop=pressure, timestep=timestep, tchain=3, pchain=3, tfreq={tfreq}, pfreq={pfreq})
+dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
+        volume=True, mode="w"), interval={dump_freq})
+dyn.attach(traj.write, interval={dump_freq})
+dyn.run(steps)
+"""
+
+nphugo_pytemplate_shock = """
+from ase.io import  read,write
+from nepactive.logger import MDLogger
 from ase import units
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.io.trajectory import Trajectory
@@ -215,7 +304,7 @@ e0 = {e0}
 p0 = 1*units.GPa
 v0 = {v0}
 pressure = {pressure} * units.GPa
-dyn = NPHugo(atoms, e0 = e0, p0 = p0, v0=v0, p_stop=pressure, timestep=timestep, tchain=3, pchain=3, pfreq=0.001)
+dyn = NPHugo(atoms, e0 = e0, p0 = p0, v0=v0, p_stop=pressure, timestep=timestep, tchain=3, pchain=3, pfreq=0.025, tfreq=0.1)
 dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
         volume=True, mode="w"), interval={dump_freq})
 dyn.attach(traj.write, interval={dump_freq})

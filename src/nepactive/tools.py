@@ -5,7 +5,7 @@ import numpy as np
 from mattersim.forcefield import MatterSimCalculator
 from ase.optimize import LBFGS
 from nepactive import dlog
-from nepactive.template import model_devi_template
+from nepactive.template import model_devi_template,pytask_template
 import subprocess
 import os
 from glob import glob
@@ -34,30 +34,45 @@ def small_opt(file:str):
 from sympy import symbols, Eq, solve
 import numpy as np
 import matplotlib.pyplot as plt
-plt.rcParams['font.family'] = 'serif'
-plt.rcParams['font.serif'] = 'Times New Roman'
-plt.rcParams['font.size'] = 18
-plt.rcParams.update({'axes.linewidth': 2, 'axes.edgecolor': 'black'})
-# 设置全局字体加粗
-# 设置全局字体加粗
-plt.rcParams.update({
-    'font.family': 'Times New Roman',
-    'font.weight': 'bold',  # 全局字体加粗
-    'axes.labelweight': 'bold',  # 坐标轴标签加粗
-    'axes.titleweight': 'bold',  # 标题加粗
-    'axes.linewidth': 2,  # 设置坐标轴边框线宽
-    'axes.edgecolor': 'black',  # 设置坐标轴边框颜色
-    # 'mathtext.fontset': 'cm',  # 设置数学文本字体
-    'mathtext.default': 'regular',  # 关键设置
-    'mathtext.rm': 'Times New Roman',  # 设置数学文本的正常字体
-    'mathtext.it': 'Times New Roman:italic',  # 设置数学文本的斜体字体
-    'mathtext.bf': 'Times New Roman:bold'  #
+# plt.rcParams['font.family'] = 'serif'
+# plt.rcParams['font.serif'] = 'Times New Roman'
+# plt.rcParams['font.size'] = 18
+# plt.rcParams.update({'axes.linewidth': 2, 'axes.edgecolor': 'black'})
+# # 设置全局字体加粗
+# # 设置全局字体加粗
+# plt.rcParams.update({
+#     'font.family': 'Times New Roman',
+#     'font.weight': 'bold',  # 全局字体加粗
+#     'axes.labelweight': 'bold',  # 坐标轴标签加粗
+#     'axes.titleweight': 'bold',  # 标题加粗
+#     'axes.linewidth': 2,  # 设置坐标轴边框线宽
+#     'axes.edgecolor': 'black',  # 设置坐标轴边框颜色
+#     # 'mathtext.fontset': 'cm',  # 设置数学文本字体
+#     'mathtext.default': 'regular',  # 关键设置
+#     'mathtext.rm': 'Times New Roman',  # 设置数学文本的正常字体
+#     'mathtext.it': 'Times New Roman:italic',  # 设置数学文本的斜体字体
+#     'mathtext.bf': 'Times New Roman:bold'  #
 
+# })
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = ['Arial']   # 图表字体 Arial
+plt.rcParams['font.size'] = 18
+
+plt.rcParams.update({
+    'font.weight': 'normal',
+    'axes.labelweight': 'normal',
+    'axes.titleweight': 'normal',
+    'axes.linewidth': 1,
+    'axes.edgecolor': 'black',
+    'mathtext.default': 'regular',
+    'mathtext.rm': 'Arial',                 # 数学公式用 Arial
+    'mathtext.it': 'Arial:italic',
+    'mathtext.bf': 'Arial:bold'
 })
-from cycler import cycler
-default_cycler = (cycler(color=['b','r', 'g', 'y']) +
-                  cycler(linestyle=['-', '--', ':', '-.']))
-plt.rc('axes', prop_cycle=default_cycler)
+# from cycler import cycler
+# default_cycler = (cycler(color=['b','r', 'g', 'y']) +
+#                   cycler(linestyle=['-', '--', ':', '-.']))
+# plt.rc('axes', prop_cycle=default_cycler)
 def find_tangent_slope(a, b, c):
     # 定义变量
     x0 = symbols('x0')
@@ -114,15 +129,15 @@ def shock_calculate(volume,pressure,v0,rho):
     y = np.abs(a * x**2 + b * x + c)
     # print(f"x,y:{x,y}")
     if b < 0 and c < 0:
-        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2${:.2f}x{:.2f}".format(a,b,c))
+        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2${:.2f}x{:.2f}".format(a,b,c),color="blue")
     elif b < 0 and c >= 0:
-        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2${:.2f}x+{:.2f}".format(a,b,c))
+        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2${:.2f}x+{:.2f}".format(a,b,c),color="blue")
     elif b >= 0 and c < 0:
-        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2$+{:.2f}x{:.2f}".format(a,b,c))
+        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2$+{:.2f}x{:.2f}".format(a,b,c),color="blue")
     try:
         slope = float(slope)
         y_tangent = np.abs(slope * (x-1))
-        plt.plot(x, y_tangent, label=f"Rayleigh Line: y={slope:.2f}(x-1)", color='r')
+        plt.plot(x, y_tangent, label=f"Rayleigh Line: y={slope:.2f}(x-1)", color='r', linestyle="--")
 
     except TypeError:
         slope = None
@@ -134,8 +149,8 @@ def shock_calculate(volume,pressure,v0,rho):
     plt.ylim(0,int(max(pressure)*1.2))
     plt.xlabel('Relative Volume')
     plt.ylabel('Pressure (GPa)')
-    plt.legend(fontsize=8,loc='upper right')
-    plt.tight_layout()
+    plt.legend(fontsize=8,loc='upper right',framealpha=0)
+
 
     if slope:
         slope = np.float64(slope)
@@ -144,14 +159,15 @@ def shock_calculate(volume,pressure,v0,rho):
         plt.annotate(
             r'$\rho$: {} g/cm³' '\n'
             r'$({{V}}_{{CJ}}, {{P}}_{{CJ}})$: ({:.2f}, {:.2f})' '\n'
+            # r'$D_v$: {:.3f} km/s' '\n'.format(2.051, x0, y0, 10.50),
             r'$D_v$: {:.3f} km/s' '\n'.format(rho, x0, y0, shock_vel),
             xy=(x0, y0),
             # xycoords='axes fraction',
             xytext=(0.52, 0.1*max(pressure)),
             fontsize=12,
-            color='red'
+            color='red',
         )
-
+        dlog.info(f"Rayleigh line: y={slope:.2f}(x-1)")
         dlog.info(f"slope:{slope:.2f}")
         dlog.info(f"shock_vel:{shock_vel:.3f}")
         dlog.info(f"x0_num:{float(x0)}")
@@ -161,7 +177,9 @@ def shock_calculate(volume,pressure,v0,rho):
         x0 = 0
         y0 = 0
     
-    plt.savefig("shock_vel.png",dpi=300)
+    plt.tight_layout()
+    dlog.info("Saving shock_vel.png")
+    plt.savefig("shock_vel.png",dpi=300, transparent=True)
 
 
     plt.close()
@@ -189,6 +207,59 @@ def run_gpumd_task(work_dir:str=None,gpu_available:List[int]=None,task_per_gpu:i
         #     text += model_devi_template.format(work_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd",
         #                                       task_dir = task)
         text = "".join([model_devi_template.format(work_dir=work_dir, task_dir=task) for task in job])
+        with open(f"job_{index:03d}.sub", 'w') as f:
+            f.write(text)
+        job_list.append(f"job_{index:03d}.sub")
+    processes = []
+    dlog.info(f"divide {len(tasks)} tasks into {len(job_list)} jobs")
+    # model_devi_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
+    for index,job in enumerate(job_list):
+        # os.chdir(f"{model_devi_dir}/{task}")    
+        log_file = f"job_{index:03d}.log"  # Log file path
+        env = os.environ.copy()
+        gpu_id = gpu_available[index%len(gpu_available)]
+        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+        with open(log_file, 'w') as log:
+            process = subprocess.Popen(
+                ["bash", job],  # 程序名
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env  # 使用修改后的环境
+            )
+            processes.append((process, log_file))
+            dlog.info(f"submitted {job} to GPU:{gpu_id}")
+
+    for process, log_file in processes:
+        process.wait()  # Wait for all processes to complete
+        # Check for errors using the return code
+        if process.returncode != 0:
+            dlog.error(f"Process failed. Check the log at: {log_file}")
+            raise RuntimeError(f"One or more processes failed. Check the log ({work_dir}/{log_file}) files for details.")
+        else: 
+            dlog.info(f"gpumd run successfully. Log saved at: {work_dir}/{log_file}")
+
+def run_py_task(work_dir:str=None,gpu_available:List[int]=None,task_per_gpu:int=1):
+    """
+    搜索当前目录文件夹中的task文件，并将其分配到可用的GPU上运行gpumd
+    """
+    tasks = glob("**/task.*", recursive=True)
+    if not work_dir:
+        work_dir = os.getcwd()
+
+    if not tasks:
+        raise RuntimeError(f"No task files found in {work_dir}")
+    
+    task_per_job = task_per_gpu * len(gpu_available)
+    jobs = []
+    for job_id in range(task_per_job):
+        jobs.append([tasks[i] for i in range(0, len(tasks)) if (i % task_per_job) == job_id])
+    job_list = []
+    for index,job in enumerate(jobs):
+        # text = ""
+        # for task in job:
+        #     text += model_devi_template.format(work_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd",
+        #                                       task_dir = task)
+        text = "".join([pytask_template.format(work_dir=work_dir, task_dir=task) for task in job])
         with open(f"job_{index:03d}.sub", 'w') as f:
             f.write(text)
         job_list.append(f"job_{index:03d}.sub")
