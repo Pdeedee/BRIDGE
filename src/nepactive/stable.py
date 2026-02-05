@@ -10,6 +10,7 @@ from nepactive.packmol import make_structure
 import numpy as np
 from glob import glob
 import subprocess
+import re
 from nepactive import dlog
 from ase.io import read,write
 from nepactive.nphugo import MTTK
@@ -21,7 +22,7 @@ from ase.md.nvtberendsen import NVTBerendsen
 from ase.build import make_supercell
 from nepactive.template import nvt_pytemplate,nphugo_pytemplate,nphugo_template,shock_test_template,npt_pytemplate
 from nepactive.plt import ase_plt,gpumdplt
-from nepactive.tools import shock_calculate,run_gpumd_task,run_py_task,compute_volume_from_thermo
+from nepactive.tools import shock_calculate,run_gpumd_task,run_py_tasks,compute_volume_from_thermo
 from ase.io.extxyz import write_extxyz
 from nepactive.tools import  get_shortest_distance
 from nepactive.extract import analyze_trajectory
@@ -38,7 +39,7 @@ class StableRun:
         self.atoms._calc = calculator
         self.struc_num = self.sdata.get("struc_num")
         self.work_dir = os.getcwd()
-        self.pressure_list = self.sdata.get("pressures",[20,25,30,35,40,45])
+        self.pressure_list = self.sdata.get("pressure",[20,25,30,35,40,45])
         cell = self.atoms.get_cell()
         cell_complete = self.atoms.get_cell(complete=True)
         self.analyze_range = self.sdata.get("analyze_range",[0.5,1])
@@ -71,7 +72,7 @@ class StableRun:
                 nvt_pyfile = nvt_pytemplate.format(structure=self.struc_file_name,temperature = 300, steps = 10000)
                 python_interpreter = self.sdata.get("python_interpreter")
                 print(f"python interpreter:{python_interpreter},self.idata: {self.sdata}")
-                with open("ensemble.py","w") as f:
+                with open("ensemble.py","w",encoding="utf-8") as f:
                     f.write(nvt_pyfile)
                 env = os.environ.copy()
 
@@ -173,22 +174,86 @@ class StableRun:
 
     def make_molecule_dict(self):
         """
-        生成单个结构
+        生成单个结构，支持CHON分子和其他元素（如金属）作为单原子
         """
         symbols = self.atoms.get_chemical_symbols()
         element_counts = Counter(symbols)
-        c =  element_counts['C']
-        h =  element_counts['H']
-        o =  element_counts['O']
-        n =  element_counts['N']
-        result = solve_molecular_distribution(c,h,o,n)
-        max_try = 0
-        while result["error"] != 0 and max_try < 10:
-            result = solve_molecular_distribution(c,h,o,n)
-            max_try += 1
-        molecules_dict = result["solution"]
-        dlog.info(f"molecule_dict: {molecules_dict},error: {result['error']}")
-        return molecules_dict,result["error"],result["total_energy"]
+        total_atoms = len(symbols)
+
+        # 获取CHON元素数量
+        c = element_counts.get('C', 0)
+        h = element_counts.get('H', 0)
+        o = element_counts.get('O', 0)
+        n = element_counts.get('N', 0)
+        chon_total = c + h + o + n
+
+        # 处理非CHON元素（如金属等），设置为单原子
+        other_elements = {}
+        for element, count in element_counts.items():
+            if element not in ['C', 'H', 'O', 'N']:
+                other_elements[element] = count
+                dlog.info(f"Found non-CHON element {element}: {count} atoms, will be added as single atoms")
+
+        # 如果存在CHON元素，求解分子分布
+        molecules_dict = {}
+        error = 0
+        total_energy = 0
+
+        if chon_total > 0:
+            result = solve_molecular_distribution(c, h, o, n)
+            max_try = 0
+            while result["error"] != 0 and max_try < 10:
+                result = solve_molecular_distribution(c, h, o, n)
+                max_try += 1
+
+            if result["error"] != 0:
+                raise ValueError(
+                    f"Failed to find valid molecular distribution after {max_try} attempts. "
+                    f"C={c}, H={h}, O={o}, N={n}. "
+                    f"Error code: {result['error']}"
+                )
+
+            molecules_dict = result["solution"]
+            error = result["error"]
+            total_energy = result["total_energy"]
+
+        # 添加非CHON元素作为单原子
+        for element, count in other_elements.items():
+            molecules_dict[element] = count
+
+        # 验证原子数是否匹配
+        calculated_atoms = 0
+        for molecule, count in molecules_dict.items():
+            if molecule in other_elements:
+                # 单原子
+                calculated_atoms += count
+            else:
+                # 分子，需要计算分子中的原子数
+                tokens = re.findall(r'[A-Z][a-z]?|\d+', molecule)
+                mol_atoms = 0
+                i = 0
+                while i < len(tokens):
+                    if tokens[i].isdigit():
+                        i += 1
+                        continue
+                    # 当前是元素符号
+                    if i + 1 < len(tokens) and tokens[i + 1].isdigit():
+                        mol_atoms += int(tokens[i + 1])
+                        i += 2
+                    else:
+                        mol_atoms += 1
+                        i += 1
+                calculated_atoms += mol_atoms * count
+
+        if calculated_atoms != total_atoms:
+            raise ValueError(
+                f"Atom count mismatch! Expected {total_atoms} atoms, but molecule_dict gives {calculated_atoms} atoms. "
+                f"molecule_dict: {molecules_dict}, "
+                f"Original composition: {dict(element_counts)}"
+            )
+
+        dlog.info(f"molecule_dict: {molecules_dict}, error: {error}, verified atom count: {calculated_atoms}/{total_atoms}")
+        return molecules_dict, error, total_energy
 
     def make_preparations(self):
         new = False
@@ -211,13 +276,26 @@ class StableRun:
             dlog.info(f"final molecule_dict: {molecule_dict_list[index]}")
             os.makedirs("structure",exist_ok=True)
             os.chdir("structure")
-            
+
             current_dir = os.path.dirname(os.path.abspath(__file__))
             parent_dir = os.path.dirname(os.path.dirname(current_dir))
             source_file = os.path.join(parent_dir, 'molecules')
 
             if not os.path.isfile("POSCAR"):
                 os.system(f"cp {source_file}/*pdb .")
+
+                # 为单原子创建 PDB 文件
+                symbols = self.atoms.get_chemical_symbols()
+                element_counts = Counter(symbols)
+                for element in element_counts.keys():
+                    if element not in ['C', 'H', 'O', 'N'] and element in molecule_dict:
+                        pdb_file = f"{element}.pdb"
+                        if not os.path.exists(pdb_file):
+                            with open(pdb_file, 'w') as f:
+                                f.write(f"HETATM    1  {element:<2}  UNK     1       0.000   0.000   0.000  1.00  0.00           {element}\n")
+                                f.write("END\n")
+                            dlog.info(f"Created PDB file for single atom: {element}")
+
                 self.make_structure(molecule_dict,name="POSCAR")
                 dlog.info(f"make structure for {molecule_dict}")
 
@@ -287,7 +365,7 @@ class StableRun:
         dlog.info(f"start run py tasks")
         gpu_available = self.idata.get("gpu_available",[0,1,2,3])
         self.task_per_gpu = self.idata.get("task_per_gpu",1)
-        run_py_task(gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)
+        run_py_tasks(gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)
 
     def make_structure(self,molecule_dict:dict,name):
         """
@@ -297,7 +375,7 @@ class StableRun:
         lattice = np.power(self.volume, 1/3)
         cell = [lattice,lattice,lattice]
 
-        make_structure(molecules=molecule_dict, cell=cell, name=name)
+        make_structure(molecules=molecule_dict, name=name)
 
     def make_pytasks(self):
         """ 
@@ -309,32 +387,35 @@ class StableRun:
         ensemble = self.idata["model_devi_general"][0].get("ensembles",["nphugo"])[0]
         self.total_time = steps * 0.2
         dlog.info(f"Makes totally {len(self.pressure_list)} tasks for ensemble {ensemble}")
+        temperatures = self.sdata.get("temperature",[3000])
         # dlog.info(f"pressure_list: {self.pressure_list}")
         for ii,_ in enumerate(self.pressure_list):
-            dlog.info(f"make task for pressure {self.pressure_list[ii]} GPa")
-            os.chdir(work_dir)
-            task_dir = os.path.join(work_dir,f"task.{ii:03d}")
-            task_dirs.append(task_dir)
-            os.makedirs(task_dir,exist_ok=True)
-            os.chdir(task_dir)
-            dump_freq = self.sdata.get("dump_freq",100)
-            pfreq = self.sdata.get("pfreq",None)
-            tfreq = self.sdata.get("tfreq",None)
-            timestep = self.sdata.get("time_step",0.2)
-            temperature = self.idata["model_devi_general"][0].get("temperature",[3000])[-1]
-            if ensemble == "nphugo":
-                py_file = nphugo_pytemplate.format(structure = "../structure/POSCAR",e0=self.energy,dump_freq = dump_freq,p0=0,
-                                                    v0=self.r_v, pressure=self.pressure_list[ii], steps = steps, pfreq=pfreq, tfreq=tfreq)
-            elif ensemble == "nvt":
-                py_file = nvt_pytemplate.format(structure = "../structure/POSCAR",temperature = temperature, dump_freq = dump_freq, steps = steps)
-            elif ensemble == "npt":
-                py_file = npt_pytemplate.format(structure = "../structure/POSCAR",temperature = temperature, pressure=self.pressure_list[ii], 
-                                                dump_freq = dump_freq, steps = steps, time_step=timestep)
-            elif ensemble == "msst":
-                py_file = nphugo_pytemplate.format(structure = "../structure/POSCAR",e0=self.energy,dump_freq = dump_freq,p0=0,
-                                                    v0=self.r_v, pressure=self.pressure_list[ii], steps = steps, pfreq=pfreq, tfreq=tfreq)
-            with open("ensemble.py","w",encoding='utf-8') as f:
-                f.write(py_file)
+            for jj in range(len(temperatures)):
+                temperature = temperatures[jj]
+                dlog.info(f"make task for pressure {self.pressure_list[ii]} GPa")
+                os.chdir(work_dir)
+                task_dir = os.path.join(work_dir,f"task.{ii:03d}")
+                task_dirs.append(task_dir)
+                os.makedirs(task_dir,exist_ok=True)
+                os.chdir(task_dir)
+                dump_freq = self.sdata.get("dump_freq",100)
+                pfreq = self.sdata.get("pfreq",None)
+                tfreq = self.sdata.get("tfreq",None)
+                timestep = self.sdata.get("time_step",0.2)
+                
+                if ensemble == "nphugo":
+                    py_file = nphugo_pytemplate.format(structure = "../structure/POSCAR",e0=self.energy,dump_freq = dump_freq,p0=0,
+                                                        v0=self.r_v, pressure=self.pressure_list[ii], steps = steps, pfreq=pfreq, tfreq=tfreq)
+                elif ensemble == "nvt":
+                    py_file = nvt_pytemplate.format(structure = "../structure/POSCAR",temperature = temperature, dump_freq = dump_freq, steps = steps)
+                elif ensemble == "npt":
+                    py_file = npt_pytemplate.format(structure = "../structure/POSCAR",temperature = temperature, pressure=self.pressure_list[ii], 
+                                                    dump_freq = dump_freq, steps = steps, time_step=timestep)
+                elif ensemble == "msst":
+                    py_file = nphugo_pytemplate.format(structure = "../structure/POSCAR",e0=self.energy,dump_freq = dump_freq,p0=0,
+                                                        v0=self.r_v, pressure=self.pressure_list[ii], steps = steps, pfreq=pfreq, tfreq=tfreq)
+                with open("ensemble.py","w",encoding='utf-8') as f:
+                    f.write(py_file)
 
     def post_process(self):
         if self.pot == "mattersim":

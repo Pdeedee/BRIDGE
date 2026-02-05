@@ -1,5 +1,6 @@
 """Logging for molecular dynamics."""
 import weakref
+import time
 from typing import IO, Any, Union
 
 from ase import Atoms, units
@@ -8,31 +9,16 @@ from ase.utils import IOContext
 
 
 class MDLogger(IOContext):
-    """Class for logging molecular dynamics simulations.
-
-    Parameters:
-    dyn:           The dynamics.  Only a weak reference is kept.
-
-    atoms:         The atoms.
-
-    logfile:       File name or open file, "-" meaning standard output.
-
-    stress=False:  Include stress in log.
-
-    peratom=False: Write energies per atom.
-
-    mode="a":      How the file is opened if logfile is a filename.
-    """
-
     def __init__(
         self,
-        dyn: Any,  # not fully annotated so far to avoid a circular import
+        dyn: Any,
         atoms: Atoms,
         logfile: Union[IO, str],
         header: bool = True,
-        stress: bool = False,
+        stress: bool = True,
         peratom: bool = False,
-        volume: bool = False, # !!!!!!
+        volume: bool = True,
+        speed: bool = True,  # 新增：是否显示速度
         mode: str = "a",
         comm=world,
     ):
@@ -42,7 +28,15 @@ class MDLogger(IOContext):
         self.logfile = self.openfile(file=logfile, mode=mode, comm=comm)
         self.stress = stress
         self.peratom = peratom
-        self.volume = volume #!!!!!!
+        self.volume = volume
+        self.speed = speed
+        
+        # 速度监控相关
+        self.start_time = time.time()
+        self.last_time = self.start_time
+        self.last_step = 0
+        self.call_count = 0
+        
         if self.dyn is not None:
             self.hdr = "%-9s " % ("Time[ps]",)
             self.fmt = "%-10.4f "
@@ -56,7 +50,6 @@ class MDLogger(IOContext):
         else:
             self.hdr += "%12s %12s %12s  %6s" % ("Etot[eV]", "Epot[eV]",
                                                  "Ekin[eV]", "T[K]")
-            # Choose a sensible number of decimals
             if global_natoms <= 100:
                 digits = 4
             elif global_natoms <= 1000:
@@ -66,13 +59,16 @@ class MDLogger(IOContext):
             else:
                 digits = 1
             self.fmt += 3 * ("%%12.%df " % (digits,)) + " %6.1f"
-        if self.volume:# !!!!!!!
+        if self.volume:
             self.hdr += "  %12s" % "V[Å^3]"
             self.fmt += " %12.4f"
         if self.stress:
             self.hdr += ('      ---------------------- stress [GPa] '
                          '-----------------------')
             self.fmt += 6 * " %10.3f"
+        if self.speed:
+            self.hdr += "  %10s %10s" % ("step/s", "ns/day")
+            self.fmt += " %10.2f %10.4f"
         self.fmt += "\n"
         if header:
             self.logfile.write(self.hdr + "\n")
@@ -94,11 +90,34 @@ class MDLogger(IOContext):
         else:
             dat = ()
         dat += (epot + ekin, epot, ekin, temp)
-        if self.volume:# !!!!!!!
+        if self.volume:
             dat += (self.atoms.get_volume(),)
         if self.stress:
             dat += tuple(self.atoms.get_stress(
                 include_ideal_gas=True) / units.GPa)
+        
+        if self.speed:
+            current_time = time.time()
+            self.call_count += 1
+            
+            # 计算瞬时速度（基于上次调用的间隔）
+            dt = current_time - self.last_time
+            if dt > 0 and self.dyn is not None:
+                # 获取当前步数
+                current_step = self.dyn.nsteps if hasattr(self.dyn, 'nsteps') else self.call_count
+                dsteps = current_step - self.last_step
+                steps_per_sec = dsteps / dt if dsteps > 0 else 0
+                
+                # 计算 ns/day
+                timestep_fs = self.dyn.dt / units.fs if hasattr(self.dyn, 'dt') else 0.2
+                ns_per_day = steps_per_sec * timestep_fs * 1e-6 * 86400
+                
+                dat += (steps_per_sec, ns_per_day)
+                
+                self.last_time = current_time
+                self.last_step = current_step
+            else:
+                dat += (0.0, 0.0)
 
         self.logfile.write(self.fmt % dat)
         self.logfile.flush()

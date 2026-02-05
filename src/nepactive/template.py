@@ -84,12 +84,30 @@ run                       {run_steps}
 """
 
 model_devi_template = """
-cd {work_dir}
-cd {task_dir}
-if [ ! -f task_finished ] ;then 
-rm -f dump.xyz thermo.out log
-gpumd > log 2>&1
-if test $? -eq 0; then touch task_finished;fi
+# set -e  # 遇到错误立即退出
+# set -x  # 打印每条执行的命令
+
+echo "Current directory: $(pwd)"
+echo "Changing to work_dir: {work_dir}"
+cd {work_dir} || {{ echo "Failed to cd to {work_dir}"; exit 1; }}
+echo "Changing to task_dir: {task_dir}"
+cd {task_dir} || {{ echo "Failed to cd to {task_dir}"; exit 1; }}
+
+echo "Now in directory: $(pwd)"
+
+if [ ! -f task_finished ]; then 
+    echo "Starting gpumd task..."
+    rm -f dump.xyz thermo.out log
+    gpumd > log 2>&1
+    if [ $? -eq 0 ]; then 
+        touch task_finished
+        echo "Task finished successfully"
+    else
+        echo "gpumd failed with exit code $?"
+        exit 1
+    fi
+else
+    echo "Task already finished, skipping..."
 fi
 
 """

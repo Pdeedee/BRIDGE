@@ -10,6 +10,8 @@ import subprocess
 import numpy as np
 from ase.optimize import LBFGS
 from ase.filters import UnitCellFilter
+from ase import units
+from nepactive import dlog
 # os.system("cp /home/liuzf/scripts/packmol/*pdb .")
 name = "packmol.pdb"
 
@@ -30,9 +32,22 @@ output packmol.pdb
 """
 # structure = "structure.pdb"
 
-cell = [12, 12, 12]
+# cell = [12, 12, 12]
 
-def make_structure(molecules:dict,cell:list,name:str):
+def make_structure(molecules:dict,name:str,density:float=1.8e3):
+    # current_dir = os.path.dirname(os.path.abspath(__file__))
+    # parent_dir = os.path.dirname(os.path.dirname(current_dir))
+    # source_file = os.path.join(parent_dir, 'molecules')
+    # os.system(f"cp {source_file}/*pdb .")
+
+
+    atoms_list = [read(f"{key}.pdb") for key in molecules.keys()]
+    atoms_masses = [atoms.get_masses().sum() for atoms in atoms_list]
+    total_mass = sum([molecules[key]*atoms_masses[i] for i,key in enumerate(molecules.keys())])
+    volume = total_mass / (density * units.kg / units.m**3)  # cm^3
+    length = volume ** (1/3)
+    dlog.info(f"Target density: {density} g/m^3, Total mass: {total_mass} amu, Volume: {volume:.2f} A^3, Box length: {length:.2f} A")
+    cell = [length]*3
     cycle_text = "\n".join([template.format(pdb_file = f"{key}.pdb", number = value, l1 = cell[0], l2 = cell[1], l3 = cell[2]) for key,value in molecules.items()])
     text = head_text + cycle_text
 

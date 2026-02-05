@@ -4,3 +4,6 @@ Version: 0.1
 Summary: Extreme condition MLP
 Author-email: Liu Zifeng <e1146670434@163.com>
 Keywords: keywords relating to your package
+Requires-Dist: ase==3.23.0
+Requires-Dist: mattersim
+Requires-Dist: numpy==1.26.4

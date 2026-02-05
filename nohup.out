@@ -868,3 +868,263 @@ src/nepactive/__pycache__/train.cpython-39.pyc
 
 sent 123,949 bytes  received 4,434 bytes  256,766.00 bytes/sec
 total size is 3,021,104  speedup is 23.53
+sending incremental file list
+src/nepactive.egg-info/
+src/nepactive.egg-info/PKG-INFO
+src/nepactive.egg-info/SOURCES.txt
+src/nepactive.egg-info/dependency_links.txt
+src/nepactive.egg-info/entry_points.txt
+src/nepactive.egg-info/requires.txt
+src/nepactive.egg-info/top_level.txt
+src/nepactive/
+src/nepactive/in.yaml
+src/nepactive/packmol.py
+src/nepactive/stable.py
+src/nepactive/tools.py
+src/nepactive/train.py
+src/nepactive/.git/FETCH_HEAD
+src/nepactive/.vscode/launch.json
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-39.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-39.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-39.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-39.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-39.pyc
+
+sent 122,907 bytes  received 4,675 bytes  255,164.00 bytes/sec
+total size is 3,025,169  speedup is 23.71
+sending incremental file list
+src/nepactive/tools.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 98,437 bytes  received 2,738 bytes  67,450.00 bytes/sec
+total size is 3,029,814  speedup is 29.95
+sending incremental file list
+src/nepactive/train.py
+
+sent 17,737 bytes  received 804 bytes  12,360.67 bytes/sec
+total size is 3,029,721  speedup is 163.41
+sending incremental file list
+src/nepactive/train.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 99,481 bytes  received 3,248 bytes  68,486.00 bytes/sec
+total size is 3,034,579  speedup is 29.54
+sending incremental file list
+src/nepactive/in.yaml
+src/nepactive/stable.py
+src/nepactive/train.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 99,277 bytes  received 3,592 bytes  68,579.33 bytes/sec
+total size is 3,035,107  speedup is 29.50
+sending incremental file list
+src/nepactive/in.yaml
+src/nepactive/stable.py
+src/nepactive/test.ipynb
+src/nepactive/train.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 99,023 bytes  received 5,687 bytes  69,806.67 bytes/sec
+total size is 3,035,439  speedup is 28.99
+sending incremental file list
+src/nepactive/tools.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 97,845 bytes  received 2,794 bytes  201,278.00 bytes/sec
+total size is 3,035,628  speedup is 30.16
+sending incremental file list
+src/nepactive/tools.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 97,695 bytes  received 2,794 bytes  200,978.00 bytes/sec
+total size is 3,035,663  speedup is 30.21
+sending incremental file list
+src/nepactive/template.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 97,508 bytes  received 2,738 bytes  200,492.00 bytes/sec
+total size is 3,036,210  speedup is 30.29
+sending incremental file list
+src/nepactive/template.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 97,701 bytes  received 2,750 bytes  66,967.33 bytes/sec
+total size is 3,036,214  speedup is 30.23
+sending incremental file list
+src/nepactive/template.py
+src/nepactive/tools.py
+src/nepactive/train.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 98,770 bytes  received 3,592 bytes  204,724.00 bytes/sec
+total size is 3,036,217  speedup is 29.66
+sending incremental file list
+src/nepactive/stable.py
+src/nepactive/tools.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 91,457 bytes  received 2,719 bytes  62,784.00 bytes/sec
+total size is 3,031,244  speedup is 32.19
+sending incremental file list
+src/nepactive/packmol.py
+src/nepactive/stable.py
+src/nepactive/.vscode/launch.json
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-39.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-39.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/template.cpython-39.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-39.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+src/nepactive/__pycache__/train.cpython-39.pyc
+
+sent 123,631 bytes  received 3,777 bytes  84,938.67 bytes/sec
+total size is 3,033,001  speedup is 23.81
+sending incremental file list
+src/nepactive/tools.py
+src/nepactive/__pycache__/
+src/nepactive/__pycache__/__init__.cpython-311.pyc
+src/nepactive/__pycache__/extract.cpython-311.pyc
+src/nepactive/__pycache__/main.cpython-311.pyc
+src/nepactive/__pycache__/nphugo.cpython-311.pyc
+src/nepactive/__pycache__/packmol.cpython-311.pyc
+src/nepactive/__pycache__/plt.cpython-311.pyc
+src/nepactive/__pycache__/random_stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-311.pyc
+src/nepactive/__pycache__/stable.cpython-39.pyc
+src/nepactive/__pycache__/template.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-311.pyc
+src/nepactive/__pycache__/tools.cpython-39.pyc
+src/nepactive/__pycache__/train.cpython-311.pyc
+
+sent 102,843 bytes  received 3,040 bytes  211,766.00 bytes/sec
+total size is 3,033,055  speedup is 28.65

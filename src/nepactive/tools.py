@@ -11,6 +11,12 @@ import os
 from glob import glob
 from sympy import N
 import numbers
+header = """
+#!/bin/bash
+set -e
+set -u  # ✅ 使用未定义变量时报错
+set -o pipefail  # ✅ 管道中任何命令失败都算失败
+"""
 
 def select_by_force(traj:List[Atoms],threshold:float=50):
     """select the frames with max force larger than threshold"""
@@ -125,15 +131,14 @@ def shock_calculate(volume,pressure,v0,rho):
     slope, x0 = find_tangent_slope(a, b, c)
     y0 = np.abs(slope * (x0 - 1))
     x = np.arange(0,1.1,0.01)
-
+    plt.figure(dpi=300)
     y = np.abs(a * x**2 + b * x + c)
-    # print(f"x,y:{x,y}")
-    if b < 0 and c < 0:
-        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2${:.2f}x{:.2f}".format(a,b,c),color="blue")
-    elif b < 0 and c >= 0:
-        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2${:.2f}x+{:.2f}".format(a,b,c),color="blue")
-    elif b >= 0 and c < 0:
-        plt.plot(x, y, label=r"Hugoniot Curve: y={:.2f}$x^2$+{:.2f}x{:.2f}".format(a,b,c),color="blue")
+    
+    def sign(val):
+        return f"+{val:.2f}" if val >= 0 else f"{val:.2f}"
+    
+    label = rf"Hugoniot Curve: $\mathrm{{y}}={a:.2f}\mathrm{{x^2}}{sign(b)}\mathrm{{x}}{sign(c)}$"
+    plt.plot(x, y, label=label)
     try:
         slope = float(slope)
         y_tangent = np.abs(slope * (x-1))
@@ -149,7 +154,7 @@ def shock_calculate(volume,pressure,v0,rho):
     plt.ylim(0,int(max(pressure)*1.2))
     plt.xlabel('Relative Volume')
     plt.ylabel('Pressure (GPa)')
-    plt.legend(fontsize=8,loc='upper right',framealpha=0)
+    plt.legend(fontsize=10,loc='upper right',framealpha=0)
 
 
     if slope:
@@ -179,11 +184,70 @@ def shock_calculate(volume,pressure,v0,rho):
     
     plt.tight_layout()
     dlog.info("Saving shock_vel.png")
+    # ax = plt.gca()
+    # ax.spines['right'].set_visible(False)
+    # ax.spines['top'].set_visible(False)
     plt.savefig("shock_vel.png",dpi=300, transparent=True)
 
 
     plt.close()
     return shock_vel,x0,y0,rho
+
+def run_py_tasks(work_dir:str=None,gpu_available:List[int]=None,task_per_gpu:int=1):
+    """
+    搜索当前目录文件夹中的task文件，并将其分配到可用的GPU上运行gpumd
+    """
+    tasks = glob("**/task.*", recursive=True)
+    if not work_dir:
+        work_dir = os.getcwd()
+
+    if not tasks:
+        raise RuntimeError(f"No task files found in {work_dir}")
+    
+    task_per_job = task_per_gpu * len(gpu_available)
+    jobs = []
+    for job_id in range(task_per_job):
+        jobs.append([tasks[i] for i in range(0, len(tasks)) if (i % task_per_job) == job_id])
+    job_list = []
+    for index,job in enumerate(jobs):
+        text = "".join([pytask_template.format(work_dir=work_dir, task_dir=task) for task in job])
+        with open(f"job_{index:03d}.sub", 'w') as f:
+            f.write(text)
+        job_list.append(f"job_{index:03d}.sub")
+    
+    processes = []
+    dlog.info(f"divide {len(tasks)} tasks into {len(job_list)} jobs")
+    
+    try:
+        for index,job in enumerate(job_list):
+            log_file_name = f"job_{index:03d}.log"
+            env = os.environ.copy()
+            gpu_id = gpu_available[index%len(gpu_available)]
+            env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+            
+            log = open(log_file_name, 'w')
+            process = subprocess.Popen(
+                ["bash", job],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env
+            )
+            processes.append((process, log, log_file_name))  # ✅ 保存进程、log对象、文件名
+            dlog.info(f"submitted {job} to GPU:{gpu_id}")
+
+        # 等待所有进程完成
+        for process, log, log_file_name in processes:
+            process.wait()
+            if process.returncode != 0:
+                dlog.error(f"Process failed. Check the log at: {log_file_name}")
+                raise RuntimeError(f"One or more processes failed. Check the log ({work_dir}/{log_file_name}) files for details.")
+            else: 
+                dlog.info(f"task run successfully. Log saved at: {work_dir}/{log_file_name}")
+    
+    finally:
+        # ✅ 关闭所有日志文件
+        for _, log, _ in processes:
+            log.close()
 
 def run_gpumd_task(work_dir:str=None,gpu_available:List[int]=None,task_per_gpu:int=1):
     """
@@ -196,100 +260,58 @@ def run_gpumd_task(work_dir:str=None,gpu_available:List[int]=None,task_per_gpu:i
     if not tasks:
         raise RuntimeError(f"No task files found in {work_dir}")
     
-    task_per_job = task_per_gpu * len(gpu_available)
+    num_jobs = task_per_gpu * len(gpu_available)
     jobs = []
-    for job_id in range(task_per_job):
-        jobs.append([tasks[i] for i in range(0, len(tasks)) if (i % task_per_job) == job_id])
+    for job_id in range(num_jobs):
+        jobs.append([tasks[i] for i in range(0, len(tasks)) if (i % num_jobs) == job_id])
+
+    # ✅ 创建job文件
     job_list = []
-    for index,job in enumerate(jobs):
-        # text = ""
-        # for task in job:
-        #     text += model_devi_template.format(work_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd",
-        #                                       task_dir = task)
+    for index, job in enumerate(jobs):
         text = "".join([model_devi_template.format(work_dir=work_dir, task_dir=task) for task in job])
-        with open(f"job_{index:03d}.sub", 'w') as f:
+        text = header + text  # ✅ 添加header
+        with open(f"job_{index:03d}.sub", 'w',encoding="utf-8") as f:
             f.write(text)
         job_list.append(f"job_{index:03d}.sub")
-    processes = []
-    dlog.info(f"divide {len(tasks)} tasks into {len(job_list)} jobs")
-    # model_devi_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
-    for index,job in enumerate(job_list):
-        # os.chdir(f"{model_devi_dir}/{task}")    
-        log_file = f"job_{index:03d}.log"  # Log file path
-        env = os.environ.copy()
-        gpu_id = gpu_available[index%len(gpu_available)]
-        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-        with open(log_file, 'w') as log:
-            process = subprocess.Popen(
-                ["bash", job],  # 程序名
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                env=env  # 使用修改后的环境
-            )
-            processes.append((process, log_file))
-            dlog.info(f"submitted {job} to GPU:{gpu_id}")
-
-    for process, log_file in processes:
-        process.wait()  # Wait for all processes to complete
-        # Check for errors using the return code
-        if process.returncode != 0:
-            dlog.error(f"Process failed. Check the log at: {log_file}")
-            raise RuntimeError(f"One or more processes failed. Check the log ({work_dir}/{log_file}) files for details.")
-        else: 
-            dlog.info(f"gpumd run successfully. Log saved at: {work_dir}/{log_file}")
-
-def run_py_task(work_dir:str=None,gpu_available:List[int]=None,task_per_gpu:int=1):
-    """
-    搜索当前目录文件夹中的task文件，并将其分配到可用的GPU上运行gpumd
-    """
-    tasks = glob("**/task.*", recursive=True)
-    if not work_dir:
-        work_dir = os.getcwd()
-
-    if not tasks:
-        raise RuntimeError(f"No task files found in {work_dir}")
     
-    task_per_job = task_per_gpu * len(gpu_available)
-    jobs = []
-    for job_id in range(task_per_job):
-        jobs.append([tasks[i] for i in range(0, len(tasks)) if (i % task_per_job) == job_id])
-    job_list = []
-    for index,job in enumerate(jobs):
-        # text = ""
-        # for task in job:
-        #     text += model_devi_template.format(work_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd",
-        #                                       task_dir = task)
-        text = "".join([pytask_template.format(work_dir=work_dir, task_dir=task) for task in job])
-        with open(f"job_{index:03d}.sub", 'w') as f:
-            f.write(text)
-        job_list.append(f"job_{index:03d}.sub")
-    processes = []
     dlog.info(f"divide {len(tasks)} tasks into {len(job_list)} jobs")
-    # model_devi_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
-    for index,job in enumerate(job_list):
-        # os.chdir(f"{model_devi_dir}/{task}")    
-        log_file = f"job_{index:03d}.log"  # Log file path
-        env = os.environ.copy()
-        gpu_id = gpu_available[index%len(gpu_available)]
-        env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-        with open(log_file, 'w') as log:
+    
+    # ✅ 执行jobs
+    processes = []
+    logs = []
+    try:
+        for index, job in enumerate(job_list):
+            log_file = f"job_{index:03d}.log"
+            env = os.environ.copy()
+            gpu_id = gpu_available[index % len(gpu_available)]
+            env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+            
+            log = open(log_file, 'w')
+            logs.append(log)
+            
             process = subprocess.Popen(
-                ["bash", job],  # 程序名
+                ["bash", job],
                 stdout=log,
                 stderr=subprocess.STDOUT,
-                env=env  # 使用修改后的环境
+                env=env
             )
             processes.append((process, log_file))
             dlog.info(f"submitted {job} to GPU:{gpu_id}")
 
-    for process, log_file in processes:
-        process.wait()  # Wait for all processes to complete
-        # Check for errors using the return code
-        if process.returncode != 0:
-            dlog.error(f"Process failed. Check the log at: {log_file}")
-            raise RuntimeError(f"One or more processes failed. Check the log ({work_dir}/{log_file}) files for details.")
-        else: 
-            dlog.info(f"gpumd run successfully. Log saved at: {work_dir}/{log_file}")
+        # 等待所有进程完成
+        for process, log_file in processes:
+            process.wait()
+            if process.returncode != 0:
+                dlog.error(f"Process failed. Check the log at: {log_file}")
+                raise RuntimeError(f"One or more processes failed. Check the log ({work_dir}/{log_file}) files for details.")
+            else: 
+                dlog.info(f"gpumd run successfully. Log saved at: {work_dir}/{log_file}")
+    finally:
+        # 关闭所有日志文件
+        for log in logs:
+            log.flush()  # ✅ 先刷新缓冲区
+            log.close()
+
 
 def compute_volume_from_thermo(thermo:np.ndarray):
     num_columns = thermo.shape[1]

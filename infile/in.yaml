@@ -1,0 +1,39 @@
+replicate_cell: "1 1 1"
+nep_in_header: "4 C N O H" # nep文件头部信息
+ini_frames: 1500                                                      # 初始数据集所需要的结构数
+ini_train_steps: 10000                                                # 第一代训练步数
+training_ratio: 0.8                                                   # 训练集比例
+pot_number: 4                                                         # 势函数个数
+pot_inherit: true                                                     # 下一代的训练势函数是否继承上一代的训练结果，否的话会重新训练
+train_steps: 5000                                                     # 每一代势函数的训练步数
+# pot_file: "/home/liuzf/.local/mattersim/pretrained_models/mattersim-v1.0.0-1M.pth" # 用来为数据集打标签的mattersim模型        !!!!!!!!!!!!!!!!!!!!!!!!!!!!
+max_temp: 10000                                                        # 主动学习过程中允许的最大温度 
+# structure_prefix: "/workplace/liuzf/code/nepactive/example/00.HMX/prep" # 结构文件所在的地址前缀，默认为当前目录
+structure_files: ["POSCAR", "init/struc.000/structure/POSCAR","prep/final.xyz"] # 用来跑动力学的初始结构的地址?
+#model_devi
+uncertainty_threshold: [0.3,1] # 主动学习过程中选取为候选的结构的uncertainty阈值
+uncertainty_level: 1           # 主动学习过程中选取为候选的uncertainty level计算相对误差所用到的参数
+uncertainty_mode: "max"        # 主动学习过程中选取为候选的uncertainty mode， 有"max","mean"两种模式
+energy_threshold: 1            # 主动学习过程中选取为候选的能量阈值下限，单位为eV
+needed_frames: 10000           # 主动学习过程中，每代所需要的保存结构数
+
+ini_run_steps: 100000          # 第0代动力学的运行步数
+max_candidate: 1000            # 主动学习过程中每代所需要的候选结构数  
+model_devi_time_step: 0.2      # 主动学习过程中每代的时间步长
+gpu_available: [0,1,2,3]       # 可用的GPU编号
+task_per_gpu: 1                # 每个GPU上运行的任务数
+time_step: 0.2                 # 动力学的时间步长
+max_run_steps: 1000000         # 当步数大于此设置的最大运行步数时且，代数大于等于20代时，程序自动停止
+model_devi_general:
+  -
+    # id: "11-24"
+    ensembles: ["nphugo","nvt"]      # 主动学习用来采样的动力学系综，爆速模拟推荐选取"nphugo"
+    structure_id: [[0,1],[0,1]]      # 动力学选取的结构文件的编号
+    pressure: [60,35,10]       # 模拟的压力列表，单位为GPa
+    pperiod: 2000              # 模拟的压浴参数设置
+    temperatures: [3000]       # 模拟的温度列表，单位为K
+
+stable:                        # 用来跑爆速测试与初始数据集部分的设置
+  pressures: [20,40,60,80]     # 初始数据集的所采取的压力列表
+  temperatures: [3000]         # 初始数据集的温度列表
+  steps: 40000                 # 初始数据集的运行步数

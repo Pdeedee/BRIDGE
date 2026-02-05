@@ -7,7 +7,7 @@
             "request": "launch",
             "program": "/workplace/liuzf/code/nepactive/src/nepactive/main.py",
             "console": "integratedTerminal",
-            "cwd": "/workplace/liuzf/code/example/stable/15structure/01.plus",
+            "cwd": "/workplace/liuzf/code/example/nepactivemain/00.HyN",
             // "args": [ "--OB"]
         }
     ]

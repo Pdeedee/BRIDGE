@@ -1,43 +1,67 @@
+# Standard library imports
+import copy
+import itertools
 import os
-from nepactive import dlog
-from nepactive.remote import Remotetask
+import random
+import re
 import shutil
 import subprocess
-from ase.io import read, write, Trajectory
-from glob import glob
-from ase import Atoms
-import random
-from typing import List,Optional
-import numpy as np
-from tqdm import tqdm
-from mattersim.forcefield import MatterSimCalculator
-import random
-from math import floor
-from torch.cuda import empty_cache
-import itertools
-from concurrent.futures import ThreadPoolExecutor
-import re
-import copy
-from nepactive.stable import StableRun
-from nepactive.template import npt_template,nphugo_template,nvt_template,msst_template,model_devi_template,nep_in_template,nphugo_pytemplate,nvt_pytemplate,continue_pytemplate
-from nepactive.plt import gpumdplt,nep_plt,ase_plt
-from nepactive import parse_yaml
-from nepactive.force import force_main
-from nepactive.tools import compute_volume_from_thermo,run_gpumd_task,run_py_task
-from nepactive.extract import analyze_trajectory
-from nepactive.write_extxyz import write_extxyz
 import time
+from concurrent.futures import ThreadPoolExecutor
+from glob import glob
+from math import ceil, floor
+from typing import List, Optional
+
+# Third-party imports
+import numpy as np
 import pandas as pd
-from nepactive.tools import get_shortest_distance
-# from concurrent.futures import ProcessPoolExecutor, as_completed
-# from functools import partial
-# from collections import defaultdict
 import yaml
+from ase import Atoms, units
+from ase.io import read, write, Trajectory
+from ase.optimize import BFGS
+from mattersim.forcefield import MatterSimCalculator
+from torch.cuda import empty_cache
+from tqdm import tqdm
+
+# Local package imports
+from nepactive import dlog, parse_yaml
+from nepactive.extract import analyze_trajectory
+from nepactive.force import force_main
+from nepactive.packmol import make_structure
+from nepactive.plt import ase_plt, gpumdplt, nep_plt
+from nepactive.remote import Remotetask
+from nepactive.stable import StableRun
+from nepactive.template import (
+    continue_pytemplate,
+    model_devi_template,
+    msst_template,
+    nep_in_template,
+    nphugo_pytemplate,
+    nphugo_template,
+    npt_template,
+    nvt_pytemplate,
+    nvt_template,
+)
+from nepactive.tools import (
+    compute_volume_from_thermo,
+    get_shortest_distance,
+    run_gpumd_task,
+    run_py_tasks,
+)
+from nepactive.write_extxyz import write_extxyz
 
 class RestartSignal(Exception):
     def __init__(self, restart_total_time = None):
         super().__init__()
         self.restart_total_time = restart_total_time
+
+
+class TrainingCompletedException(Exception):
+    """Raised when training reaches convergence criteria."""
+    def __init__(self, message, accuracy=None, error=None):
+        super().__init__(message)
+        self.accuracy = accuracy
+        self.error = error
 
 def process_id(value):
     # 检查是否为单一数字
@@ -86,6 +110,7 @@ class Nepactive(object):
         self.shock_run= self.idata.get("shock_run", True)
         self.structure_prefix = self.idata.get("structure_prefix", self.work_dir)
         if self.shock_run:
+            self.check_inistruc()
             if os.path.exists(f"{self.work_dir}/nostrucnum"):
                 self.idata["stable"]["struc_num"] = 0
                 self.idata["structure_files"] = self.idata.get("structure_files",["POSCAR"])
@@ -99,6 +124,37 @@ class Nepactive(object):
         # dlog.info(f"self.idata:{self.idata}")
         # print(f"structure_files: {self.idata['structure_files']}")
             
+    def check_inistruc(self):
+        os.chdir(self.work_dir)
+        # atoms = read("POSCAR.p")
+        atoms = read(f"{self.structure_prefix}/{self.idata.get('structure_files')[0]}")
+        if os.path.exists("POSCAR"):
+            return
+        elif os.path.exists("molecule.xyz"):
+            atoms = read("molecule.xyz")
+            os.makedirs("init",exist_ok=True)
+            os.chdir("init")
+            if not os.path.exists(f"molecule.pdb"):
+                atoms.calc = MatterSimCalculator()
+                opt = BFGS(atoms)
+                opt.run(fmax=0.05,steps=100)
+                write(f"molecule.pdb", atoms)
+            else:
+                atoms = read(f"molecule.pdb")
+            nat = len(atoms)
+            nat_r = floor(200/nat)
+            # mass_per_molecule = atoms.get_masses().sum()
+            # total_mass = nat_r * mass_per_molecule
+            # density = 1.8e3 * units.g/units.m**3  # g/cm^3
+            # length = (total_mass / density)**(1/3)
+            molecule_dict = {"molecule": nat_r}
+            make_structure(molecule_dict, name=f"{self.work_dir}/POSCAR", density=1.8e3)
+            os.chdir(self.work_dir)
+        elif self.idata.get("structure_files", None):
+            atoms = read(f"{self.structure_prefix}/{self.idata.get('structure_files')[0]}")
+            write(f"{self.work_dir}/POSCAR", atoms)
+        else:
+            raise ValueError("No initial structure found, please provide POSCAR or molecule.xyz")
 
     def run(self):
         '''
@@ -193,17 +249,19 @@ class Nepactive(object):
                         self.idata["model_devi_general"][0]["temperature"] = [3000]
                         dlog.warning("Exception occurred, set struc_num to 0 and continue")
 
-        for ii in range(len(self.idata.get("structure_files",["POSCAR"]))):
-            if ii == 0:
+        # 处理用户在 in.yaml 中额外提供的结构文件（跳过自动生成的 init/struc.000/structure/POSCAR）
+        structure_files = self.idata.get("structure_files", ["POSCAR"])
+        for ii, struct_file in enumerate(structure_files):
+            # 跳过 POSCAR 和自动生成的 init/struc.*/structure/POSCAR
+            if ii == 0 or struct_file.startswith("init/struc."):
                 continue
             os.chdir(work_dir)
             os.makedirs(f"struc.{ii:03d}",exist_ok=True)
             struc_dir = os.path.abspath(f"struc.{ii:03d}")
-            # struc_dirs.append(struc_dir)
             os.chdir(struc_dir)
             os.makedirs("structure",exist_ok=True)
-            dlog.info(f"self.idata:{self.idata}")
-            atoms = read(f"{self.structure_prefix}/{self.idata.get('structure_files')[ii]}")
+            dlog.info(f"Processing additional structure file: {struct_file}")
+            atoms = read(f"{self.structure_prefix}/{struct_file}")
             write("structure/POSCAR",atoms)
             stable_run.make_preparations()
 
@@ -244,7 +302,7 @@ class Nepactive(object):
         
         os.chdir(work_dir)
 
-        run_py_task(work_dir=work_dir, gpu_available=self.gpu_available, task_per_gpu=self.idata.get("task_per_gpu",1))
+        self.run_py_tasks()
         task_dirs = glob("./**/task.*", recursive=True)
         if task_dirs:
             task_dirs = [os.path.abspath(path) for path in task_dirs]
@@ -261,7 +319,7 @@ class Nepactive(object):
         dlog.info(f"start run py tasks")
         gpu_available = self.idata.get("gpu_available",[0,1,2,3])
         self.task_per_gpu = self.idata.get("task_per_gpu",1)
-        run_py_task(gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)
+        run_py_tasks(gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)
 
     def make_data_extraction(self):
         '''
@@ -315,8 +373,8 @@ class Nepactive(object):
                 test.append(atoms[i])
             else:
                 dlog.warning(f"{atoms[i]}failed to be classified")
-        write_extxyz("init/train.xyz", train)
-        write_extxyz("init/test.xyz", test)
+        write_extxyz("init/iter_train.xyz", train)
+        write_extxyz("init/iter_test.xyz", test)
         dlog.info("Initial training data extracted")
 
     def parse_yaml(self,file):
@@ -345,7 +403,7 @@ class Nepactive(object):
         '''
         make loop training task
         '''
-        
+
         os.chdir(self.work_dir)
 
         record = "record.nep"
@@ -360,49 +418,60 @@ class Nepactive(object):
         max_tasks = 10000
         self.restart_total_time = None
 
-        while True:
-            self.ii += 1
-            if self.ii < iter_rec[0]:
-                continue
-            self.iter_dir = os.path.abspath(os.path.join(self.work_dir,f"iter.{self.ii:06d}")) #the work path has been changed
-            os.makedirs(self.iter_dir, exist_ok=True)
-            iter_name = f"iter.{self.ii:06d}"
-            self.restart_gpumd = False
-
-            for jj in range(numb_task):
-                if not self.restart_gpumd:
-                    self.jj = jj
-                yaml_synchro = self.idata.get("yaml_synchro", False)
-                if yaml_synchro:
-                    dlog.info(f"yaml_synchro is True, reread the in.yaml from {self.work_dir}/in.yaml")
-                    self.idata:dict = self.parse_yaml(f"{self.work_dir}/in.yaml")
-                if self.ii * max_tasks + jj <= iter_rec[0] * max_tasks + iter_rec[1] and not self.restart_gpumd:
+        try:
+            while True:
+                self.ii += 1
+                if self.ii < iter_rec[0]:
                     continue
-                task_name = "task %02d" % jj
-                sepline(f"{iter_name} {task_name}", "-")
-                if jj == 0:
-                    self.make_nep_train()
-                elif jj == 1:
-                    self.run_nep_train()
-                elif jj == 2:
-                    self.post_nep_train()
-                elif jj == 3:
-                    self.make_model_devi()
-                elif jj == 4:
-                    self.run_model_devi()
-                elif jj == 5:
-                    self.post_gpumd_run()
-                elif jj == 6:
-                    self.make_label_task()
-                elif jj == 7:
-                    self.run_label_task()
-                elif jj == 8:
-                    self.post_label_task()
-                else:
-                    raise RuntimeError("unknown task %d, something wrong" % jj)
-                
-                os.chdir(self.work_dir)
-                record_iter(record, self.ii, jj)
+                self.iter_dir = os.path.abspath(os.path.join(self.work_dir,f"iter.{self.ii:06d}")) #the work path has been changed
+                os.makedirs(self.iter_dir, exist_ok=True)
+                iter_name = f"iter.{self.ii:06d}"
+                self.restart_gpumd = False
+
+                for jj in range(numb_task):
+                    if not self.restart_gpumd:
+                        self.jj = jj
+                    yaml_synchro = self.idata.get("yaml_synchro", False)
+                    if yaml_synchro:
+                        dlog.info(f"yaml_synchro is True, reread the in.yaml from {self.work_dir}/in.yaml")
+                        self.idata:dict = self.parse_yaml(f"{self.work_dir}/in.yaml")
+                    if self.ii * max_tasks + jj <= iter_rec[0] * max_tasks + iter_rec[1] and not self.restart_gpumd:
+                        continue
+                    task_name = "task %02d" % jj
+                    sepline(f"{iter_name} {task_name}", "-")
+                    if jj == 0:
+                        self.make_nep_train()
+                    elif jj == 1:
+                        self.run_nep_train()
+                    elif jj == 2:
+                        self.post_nep_train()
+                    elif jj == 3:
+                        self.make_model_devi()
+                    elif jj == 4:
+                        self.run_model_devi()
+                    elif jj == 5:
+                        self.post_gpumd_run()
+                    elif jj == 6:
+                        self.make_label_task()
+                    elif jj == 7:
+                        self.run_label_task()
+                    elif jj == 8:
+                        self.post_label_task()
+                    else:
+                        raise RuntimeError("unknown task %d, something wrong" % jj)
+
+                    os.chdir(self.work_dir)
+                    record_iter(record, self.ii, jj)
+
+        except TrainingCompletedException as e:
+            dlog.info(f"Training completed: {e}")
+            if e.accuracy and e.error:
+                dlog.info(f"Target accuracy: {e.accuracy}%, achieved error: {e.error:.2f}%")
+            return
+
+        except KeyboardInterrupt:
+            dlog.warning("Training interrupted by user")
+            raise
 
     def shock(self):
         work_dir = os.getcwd()
@@ -491,67 +560,166 @@ class Nepactive(object):
         train_steps = self.idata.get("train_steps", 10000)
         work_dir = os.path.abspath(os.path.join(self.iter_dir, "00.nep"))
         pot_num = self.idata.get("pot_num", 4)
-        pot_inherit:bool = self.idata.get("pot_inherit", True)
-        # nep_template = os.path.abspath(self.idata.get("nep_template"))
+        pot_inherit: bool = self.idata.get("pot_inherit", True)
+        self.gpu_available = self.idata.get("gpu_available")
         processes = []
+        log_files = []  # ✅ 添加log_files列表
+        
         if not pot_inherit:
             dlog.info(f"{os.getcwd()}")
             dlog.info(f"pot_inherit is false, will remove old task files {work_dir}/task*")
             os.system(f"rm -r {work_dir}/task.*")
-        for jj in range(pot_num):
-            #ensure the work_dir is the absolute path
-            task_dir = os.path.join(work_dir, f"task.{jj:06d}")
-            os.makedirs(task_dir,exist_ok=True)
-            #     absworkdir/iter.000000/00.nep/task.000000/
-            os.chdir(task_dir)
-            #preparation files
-            if not os.path.isfile("train.xyz"):
-                os.symlink("../dataset/train.xyz","train.xyz")
-            if not os.path.isfile("test.xyz"):
-                os.symlink("../dataset/test.xyz","test.xyz")
-            if not os.path.isfile("nep.in"):
-                nep_in_header = self.idata.get("nep_in_header", "type 4 H C N O")
-                if self.ii == 0:
-                    ini_train_steps = self.idata.get("ini_train_steps", 10000)
-                    nep_in = nep_in_template.format(train_steps=ini_train_steps,nep_in_header=nep_in_header)
-                else:
-                    nep_in = nep_in_template.format(train_steps=train_steps,nep_in_header=nep_in_header)
-                with open("nep.in", "w") as f:
-                    f.write(nep_in)
-                # os.symlink(nep_template, "nep.in")
-            if pot_inherit and self.ii > 0:
-                nep_restart = f"{self.work_dir}/iter.{self.ii-1:06d}/00.nep/task.{jj:06d}/nep.restart"
-                dlog.info(f"pot_inherit is true, will copy nep.restart from {nep_restart}")
-                shutil.copy(nep_restart, "nep.restart")
-                # exit()
-            log_file = os.path.join(task_dir, 'log')  # Log file path
-            env = os.environ.copy()
-            gpu_id = self.gpu_available[jj%len(self.gpu_available)]
-            env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-            # env['CUDA_VISIBLE_DEVICES'] = str(jj)
-            with open(log_file, 'w') as log:
+        
+        try:
+            for jj in range(pot_num):
+                # ensure the work_dir is the absolute path
+                task_dir = os.path.join(work_dir, f"task.{jj:06d}")
+                os.makedirs(task_dir, exist_ok=True)
+                os.chdir(task_dir)
+                
+                # preparation files
+                if not os.path.isfile("train.xyz"):
+                    os.symlink("../dataset/train.xyz", "train.xyz")
+                if not os.path.isfile("test.xyz"):
+                    os.symlink("../dataset/test.xyz", "test.xyz")
+                if not os.path.isfile("nep.in"):
+                    nep_in_header = self.idata.get("nep_in_header", "type 4 H C N O")
+                    if self.ii == 0:
+                        ini_train_steps = self.idata.get("ini_train_steps", 10000)
+                        nep_in = nep_in_template.format(train_steps=ini_train_steps, nep_in_header=nep_in_header)
+                    else:
+                        nep_in = nep_in_template.format(train_steps=train_steps, nep_in_header=nep_in_header)
+                    with open("nep.in", "w") as f:
+                        f.write(nep_in)
+                
+                if pot_inherit and self.ii > 0:
+                    nep_restart = f"{self.work_dir}/iter.{self.ii-1:06d}/00.nep/task.{jj:06d}/nep.restart"
+                    dlog.info(f"pot_inherit is true, will copy nep.restart from {nep_restart}")
+                    shutil.copy(nep_restart, "nep.restart")
+                
+                log_file_path = os.path.join(task_dir, 'log')
+                env = os.environ.copy()
+                gpu_id = self.gpu_available[jj % len(self.gpu_available)]
+                env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+                
+                # ✅ 不使用with,手动打开
+                log = open(log_file_path, 'w')
+                log_files.append(log)  # ✅ 保存文件对象
+                
                 process = subprocess.Popen(
-                    ["nep"],  # 程序名
+                    ["nep"],
                     stdout=log,
                     stderr=subprocess.STDOUT,
-                    env=env  # 使用修改后的环境
+                    env=env
                 )
-                processes.append((process, log_file))
+                processes.append((process, log_file_path))  # ✅ 保存进程和文件路径
+                dlog.info(f"submitted task.{jj:06d} to GPU:{gpu_id}")
+                
+                self.gpu_numbers = len(self.gpu_available)  # ✅ 修正:使用self.gpu_available
+                
+                # ✅ 每提交gpu_numbers个任务后,等待这一批完成
+                if (jj + 1) % self.gpu_numbers == 0:
+                    dlog.info(f"jobs submitted, checking status of batch ending at task.{jj:06d}")
+                    for process, log_file_path in processes:
+                        process.wait()
+                        if process.returncode != 0:
+                            dlog.error(f"Process failed. Check the log at: {log_file_path}")
+                            raise RuntimeError(f"One or more processes failed. Check the log file:({log_file_path}) for details.")
+                        else:
+                            dlog.info(f"Process completed successfully. Log saved at: {log_file_path}")
+                    
+                    # ✅ 这一批完成后清空列表,准备下一批
+                    processes = []
             
-            self.gpu_numbers = len(self.idata.get("gpu_available"))            
-            if (jj+1)%self.gpu_numbers == 0:
-                dlog.info(f"jobs submitted, checking status of {self.jj}")
-                for process, log_file in processes:
-                    process.wait()  # Wait for all processes to complete
-                    # Check for errors using the return code
+            # ✅ 处理最后不满一批的任务
+            if processes:
+                dlog.info(f"checking remaining jobs")
+                for process, log_file_path in processes:
+                    process.wait()
                     if process.returncode != 0:
-                        dlog.error(f"Process failed. Check the log at: {log_file}")
-                        raise RuntimeError(f"One or more processes failed. Check the log file:({log_file}) for details.")
+                        dlog.error(f"Process failed. Check the log at: {log_file_path}")
+                        raise RuntimeError(f"One or more processes failed. Check the log file:({log_file_path}) for details.")
                     else:
-                        dlog.info(f"Process completed successfully. Log saved at: {log_file}")
+                        dlog.info(f"Process completed successfully. Log saved at: {log_file_path}")
+
+        finally:
+            # Close all log files with safety checks
+            for log in log_files:
+                if log and not log.closed:
+                    try:
+                        log.flush()  # Ensure buffer is written
+                        log.close()
+                    except Exception as e:
+                        dlog.error(f"Failed to close log file: {e}")
+    # def run_nep_train(self):
+    #     '''
+    #     run nep training
+    #     '''
+    #     train_steps = self.idata.get("train_steps", 10000)
+    #     work_dir = os.path.abspath(os.path.join(self.iter_dir, "00.nep"))
+    #     pot_num = self.idata.get("pot_num", 4)
+    #     pot_inherit:bool = self.idata.get("pot_inherit", True)
+    #     # nep_template = os.path.abspath(self.idata.get("nep_template"))
+    #     processes = []
+    #     if not pot_inherit:
+    #         dlog.info(f"{os.getcwd()}")
+    #         dlog.info(f"pot_inherit is false, will remove old task files {work_dir}/task*")
+    #         os.system(f"rm -r {work_dir}/task.*")
+    #     for jj in range(pot_num):
+    #         #ensure the work_dir is the absolute path
+    #         task_dir = os.path.join(work_dir, f"task.{jj:06d}")
+    #         os.makedirs(task_dir,exist_ok=True)
+    #         #     absworkdir/iter.000000/00.nep/task.000000/
+    #         os.chdir(task_dir)
+    #         #preparation files
+    #         if not os.path.isfile("train.xyz"):
+    #             os.symlink("../dataset/train.xyz","train.xyz")
+    #         if not os.path.isfile("test.xyz"):
+    #             os.symlink("../dataset/test.xyz","test.xyz")
+    #         if not os.path.isfile("nep.in"):
+    #             nep_in_header = self.idata.get("nep_in_header", "type 4 H C N O")
+    #             if self.ii == 0:
+    #                 ini_train_steps = self.idata.get("ini_train_steps", 10000)
+    #                 nep_in = nep_in_template.format(train_steps=ini_train_steps,nep_in_header=nep_in_header)
+    #             else:
+    #                 nep_in = nep_in_template.format(train_steps=train_steps,nep_in_header=nep_in_header)
+    #             with open("nep.in", "w") as f:
+    #                 f.write(nep_in)
+    #             # os.symlink(nep_template, "nep.in")
+    #         if pot_inherit and self.ii > 0:
+    #             nep_restart = f"{self.work_dir}/iter.{self.ii-1:06d}/00.nep/task.{jj:06d}/nep.restart"
+    #             dlog.info(f"pot_inherit is true, will copy nep.restart from {nep_restart}")
+    #             shutil.copy(nep_restart, "nep.restart")
+    #             # exit()
+    #         log_file = os.path.join(task_dir, 'log')  # Log file path
+    #         env = os.environ.copy()
+    #         gpu_id = self.gpu_available[jj%len(self.gpu_available)]
+    #         env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+    #         # env['CUDA_VISIBLE_DEVICES'] = str(jj)
+    #         with open(log_file, 'w') as log:
+    #             process = subprocess.Popen(
+    #                 ["nep"],  # 程序名
+    #                 stdout=log,
+    #                 stderr=subprocess.STDOUT,
+    #                 env=env  # 使用修改后的环境
+    #             )
+    #             processes.append((process, log_file))
+            
+    #         self.gpu_numbers = len(self.idata.get("gpu_available"))            
+    #         if (jj+1)%self.gpu_numbers == 0:
+    #             dlog.info(f"jobs submitted, checking status of {self.jj}")
+    #             for process, log_file in processes:
+    #                 process.wait()  # Wait for all processes to complete
+    #                 # Check for errors using the return code
+    #                 if process.returncode != 0:
+    #                     dlog.error(f"Process failed. Check the log at: {log_file}")
+    #                     raise RuntimeError(f"One or more processes failed. Check the log file:({log_file}) for details.")
+    #                 else:
+    #                     dlog.info(f"Process completed successfully. Log saved at: {log_file}")
 
     def post_label_task(self):
         '''
+        Post-process label task and check convergence.
         '''
         if not self.shock_run:
             dlog.info("shock_run is False, skip shock velocity test")
@@ -563,18 +731,33 @@ class Nepactive(object):
         if (self.run_steps > test_begin_step) and (self.ii%test_interval == 0):
             dlog.info(f"run_steps is {self.run_steps}, will run shock velocity test")
             self.shock_vel_test()
-        if os.path.exists(f"{self.work_dir}/shock_vel.txt"):    
+
+        if os.path.exists(f"{self.work_dir}/shock_vel.txt"):
             shock_data = np.loadtxt(f"{self.work_dir}/shock_vel.txt", ndmin=2, encoding="utf-8")
             if len(shock_data) > 3:
-                Dv_error = np.abs(shock_data[-3:,0].max()- shock_data[-3:,0].min())/shock_data[-3:,0].mean()*100
+                shock_values = shock_data[-3:, 0]
+                shock_mean = shock_values.mean()
+
+                # Guard against division by zero
+                if shock_mean == 0:
+                    dlog.warning(f"Mean shock velocity is zero, skipping error calculation. Values: {shock_values}")
+                    return
+
+                Dv_error = np.abs(shock_values.max() - shock_values.min()) / shock_mean * 100
                 dlog.info(f"Shock velocity error is {Dv_error:.2f}%")
                 accuracy = self.idata.get("accuracy", 1)
                 if Dv_error < accuracy:
                     dlog.info(f"Reach accuracy {accuracy}%, job finished successfully, will stop training process")
                     fs = glob(f"{self.work_dir}/iter.{self.ii:06d}/03.shock/**/shock_vel.png",recursive=True)
-                    fs.sort()
-                    os.system(f"cp {fs[-1]} {self.work_dir}/shock_vel.png")
-                    exit()
+                    if fs:
+                        fs.sort()
+                        shutil.copy2(fs[-1], f"{self.work_dir}/shock_vel.png")
+                    # Raise exception for clean shutdown instead of exit()
+                    raise TrainingCompletedException(
+                        "Training completed successfully",
+                        accuracy=accuracy,
+                        error=Dv_error
+                    )
 
     def post_nep_train(self):
         '''
@@ -623,10 +806,10 @@ class Nepactive(object):
         testfiles = []
         # 注意每一代有没有划分训练集和测试集
         if init == True:
-            print(f"{os.path.isfile(os.path.join(global_work_dir, 'init/train.xyz'))}")
+            print(f"{os.path.isfile(os.path.join(global_work_dir, 'init/iter_train.xyz'))}")
             # 直接调用 extend 方法，不要尝试将其结果赋值
-            files.extend(glob(os.path.join(global_work_dir, "init/train.xyz")))
-            testfiles.extend(glob(os.path.join(global_work_dir, "init/test.xyz")))
+            files.extend(glob(os.path.join(global_work_dir, "init/iter_train.xyz")))
+            testfiles.extend(glob(os.path.join(global_work_dir, "init/iter_test.xyz")))
 
             # 检查文件列表是否为空
             # if not files:

@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.optimize import linprog, milp
+from scipy.optimize import linprog, milp, Bounds
 import random
 import time
 
@@ -67,20 +67,20 @@ class MolecularSolverOptimized:
         target_atoms = np.array([c, h, o, n])
         A_eq = self.atom_matrix
         b_eq = target_atoms
-        
+
         # 定义变量界限 (非负整数)
-        bounds = [(0, None) for _ in range(len(self.molecules))]
-        
+        bounds = Bounds(lb=0, ub=np.inf)
+
         # 目标函数：最小化总能量
         c_obj = self.energy_array.copy()
-        
+
         # 解整数线性规划问题
         try:
             integrality = np.ones(len(self.molecules))  # 全部变量都是整数
             result = milp(c=c_obj, constraints=[
                 {"A": A_eq, "b": b_eq, "type": "=="}
             ], integrality=integrality, bounds=bounds)
-            
+
             if result.success:
                 solution = result.x.astype(int)
                 error = self.verify_solution(solution, target_atoms)
