@@ -1,0 +1,21 @@
+{
+  "env": {
+    "_ANTHROPIC_AUTH_TOKEN": "sk-Sbn2WhwU0S4PXpp7m2kSBfAX2IW08AqL4rlzukiCSbnMK6Ce",
+    "_ANTHROPIC_BASE_URL": "http://66.154.116.134:3001",
+    "_ANTHROPIC_AUTH_TOKEN": "sk-lvRVpQrhWpifxB9bsBpUWnrUcgVaQkRAQioRkz55GPTAerZ5",
+    "_ANTHROPIC_BASE_URL": "http://cccai.cfd",
+    "ANTHROPIC_AUTH_TOKEN": "sk-rpHwWl5SIoFDFbhsGPfLIDtINUF5xkughq1rGC7dRVGYtx6I",
+    "ca_ANTHROPIC_AUTH_TOKEN": "sk-lXqex8kSR7SPrgY2P7bH7ujFaZs9GI49ci8zjmGOXLHeAP0e",
+    "ANTHROPIC_BASE_URL": "https://as.ddddcc.cc/",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+  },
+  "permissions": {
+    "allow": [],
+    "deny": []
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "npx ccsp@latest"
+  },
+  "model": "opus"
+}

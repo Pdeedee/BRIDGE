@@ -1,0 +1,214 @@
+# NEPactive 配置文件示例 - 作业提交系统
+
+# ============================================================================
+# 基本项目信息
+# ============================================================================
+project_name: "MyProject"
+yaml_synchro: true
+
+# ============================================================================
+# 作业提交系统配置
+# ============================================================================
+job_system:
+  # 作业提交模式: "local", "remote", "direct"
+  # - local: 本地使用调度系统提交（sbatch/qsub等）
+  # - remote: SSH远程提交到集群
+  # - direct: 直接执行（不使用调度系统）
+  mode: "local"
+
+  # --------------------------------------------------------------------------
+  # 本地作业提交配置
+  # --------------------------------------------------------------------------
+  local:
+    # 调度系统类型: "slurm", "pbs", "torque", "sge"
+    scheduler: "slurm"
+
+    # 提交命令（可选，默认值如下）
+    submit_command: "sbatch"
+    status_command: "squeue"
+    cancel_command: "scancel"
+
+    # 作业检查间隔（秒）
+    check_interval: 30
+
+    # ========================================================================
+    # GPU 任务的作业脚本头（用于 GPUMD/NEP 训练）
+    # ========================================================================
+    gpu_header:
+      - "#!/bin/bash"
+      - "#SBATCH --job-name=nepactive-gpu"
+      - "#SBATCH --partition=gpu"
+      - "#SBATCH --nodes=1"
+      - "#SBATCH --ntasks-per-node=1"
+      - "#SBATCH --gres=gpu:1"
+      - "#SBATCH --time=24:00:00"
+      - "#SBATCH --output=job_%j.out"
+      - "#SBATCH --error=job_%j.err"
+      - ""
+      - "# 加载环境"
+      - "module purge"
+      - "module load cuda/11.8"
+      - "module load gcc/9.3.0"
+      - ""
+      - "# 激活 Python 环境"
+      - "source /path/to/conda/bin/activate"
+      - "conda activate nepactive"
+      - ""
+      - "# 设置 GPUMD 路径"
+      - "export PATH=/path/to/gpumd/bin:$PATH"
+
+    # ========================================================================
+    # CPU 任务的作业脚本头（用于数据处理等）
+    # ========================================================================
+    cpu_header:
+      - "#!/bin/bash"
+      - "#SBATCH --job-name=nepactive-cpu"
+      - "#SBATCH --partition=cpu"
+      - "#SBATCH --nodes=1"
+      - "#SBATCH --ntasks-per-node=4"
+      - "#SBATCH --time=12:00:00"
+      - "#SBATCH --output=job_%j.out"
+      - "#SBATCH --error=job_%j.err"
+      - ""
+      - "# 加载环境"
+      - "module load python/3.9"
+      - "source /path/to/venv/bin/activate"
+
+  # --------------------------------------------------------------------------
+  # 远程作业提交配置（第一性原理计算）
+  # --------------------------------------------------------------------------
+  remote:
+    # SSH 连接信息
+    ssh_username: "user@cluster"
+    ssh_hostname: "login.cluster.com"
+    ssh_port: 22
+    ssh_timeout: 20
+
+    # 远程工作目录
+    remote_root: "/scratch/user/nepactive"
+
+    # VASP 运行命令
+    fp_command: "mpirun -np 96 vasp_std"
+
+    # 任务分组数（将候选结构分成多少组提交）
+    group_numbers: 10
+
+    # ========================================================================
+    # VASP 作业脚本头
+    # ========================================================================
+    header_script:
+      - "#!/bin/bash"
+      - "#SBATCH --job-name=vasp"
+      - "#SBATCH --partition=v6_384"
+      - "#SBATCH --nodes=1"
+      - "#SBATCH --ntasks=96"
+      - "#SBATCH --time=48:00:00"
+      - "#SBATCH --output=vasp_%j.out"
+      - "#SBATCH --error=vasp_%j.err"
+      - ""
+      - "# 加载环境"
+      - "source /public1/soft/modules/module.sh"
+      - "module load mpi/oneAPI/2022.1"
+      - ""
+      - "# 设置 VASP 路径"
+      - "export PATH=/path/to/vasp:$PATH"
+
+# ============================================================================
+# NEP 训练参数
+# ============================================================================
+nep_in_header: "type 2 V N"
+replicate_cell: "1 1 1"
+accuracy: 1
+
+# 训练参数
+ini_frames: 1500
+ini_train_steps: 10000
+training_ratio: 0.8
+pot_number: 4
+pot_inherit: true
+train_steps: 5000
+
+# ============================================================================
+# 初始数据集生成
+# ============================================================================
+ini_engine: "ase"
+python_interpreter: "python"
+
+# MatterSim 模型路径（用于初始数据集生成和标注）
+pot_file: "/home/user/.local/mattersim/pretrained_models/mattersim-v1.0.0-1M.pth"
+
+# ============================================================================
+# 结构文件
+# ============================================================================
+structure_files:
+  - "POSCAR"
+  - "init/struc.000/structure/POSCAR"
+
+# VASP 输入文件（远程计算用）
+kpoints_file: "prep/KPOINTS"
+incar_file: "prep/INCAR"
+potcar_file: "prep/POTCAR"
+
+# ============================================================================
+# 主动学习参数
+# ============================================================================
+uncertainty_threshold: [0.3, 1]
+uncertainty_level: 1
+uncertainty_mode: "max"
+energy_threshold: 1
+needed_frames: 10000
+max_candidate: 1000
+
+# ============================================================================
+# 动力学参数
+# ============================================================================
+ini_run_steps: 100000
+model_devi_time_step: 0.2
+time_step: 0.2
+max_run_steps: 1000000
+
+# GPU 资源配置
+gpu_available: [0, 1, 2, 3]
+task_per_gpu: 1
+
+# ============================================================================
+# 动力学系综设置
+# ============================================================================
+model_devi_general:
+  - ensembles: ["nphugo", "nvt"]
+    structure_id: [[0, 1], [0, 1]]
+    pressure: [60, 35, 10]
+    pperiod: 2000
+    temperature: [3000]
+
+# ============================================================================
+# 初始结构生成和爆速测试
+# ============================================================================
+stable:
+  structure: "POSCAR"
+  dump_freq: 10
+  struc_num: 1
+
+  # 初始数据集参数
+  pressure: [20, 40, 60, 80]
+  temperature: [3000]
+  steps: 40000
+
+  # 爆速测试参数
+  gpumd_pressure_list: [20, 25, 30, 35, 40, 45, 50, 55]
+  gpumd_steps: 600000
+  time_step: 0.2
+  analyze_range: [0.5, 1]
+
+# 爆速测试控制
+shock_test_interval: 1
+shock_test_begin_step: 400000
+if_stable_run: true
+
+# ============================================================================
+# 其他参数
+# ============================================================================
+max_temp: 10000
+OB_give: 10
+rhos: [1.62, 1.65, 1.68, 1.70, 1.72]
+OB_gives: [0, 54]

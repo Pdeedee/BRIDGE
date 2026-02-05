@@ -1,0 +1,99 @@
+# ============================================================================
+# PBS/Torque 调度系统配置示例
+# ============================================================================
+
+job_system:
+  mode: "local"
+  scheduler: "pbs"  # 或 "torque"
+  check_interval: 30
+
+  gpu_header:
+    - "#!/bin/bash"
+    - "#PBS -N nepactive-gpu"
+    - "#PBS -q gpu"
+    - "#PBS -l nodes=1:ppn=4:gpus=1"
+    - "#PBS -l walltime=24:00:00"
+    - "#PBS -o job_${PBS_JOBID}.out"
+    - "#PBS -e job_${PBS_JOBID}.err"
+    - "#PBS -V"
+    - ""
+    - "cd $PBS_O_WORKDIR"
+    - ""
+    - "# 加载环境"
+    - "module load cuda/11.8"
+    - "module load gcc/9.3.0"
+    - "source /path/to/conda/bin/activate nepactive"
+    - "export PATH=/path/to/gpumd/bin:$PATH"
+
+  cpu_header:
+    - "#!/bin/bash"
+    - "#PBS -N nepactive-cpu"
+    - "#PBS -q cpu"
+    - "#PBS -l nodes=1:ppn=8"
+    - "#PBS -l walltime=12:00:00"
+    - "#PBS -o job_${PBS_JOBID}.out"
+    - "#PBS -e job_${PBS_JOBID}.err"
+    - "#PBS -V"
+    - ""
+    - "cd $PBS_O_WORKDIR"
+    - "module load python/3.9"
+    - "source /path/to/venv/bin/activate"
+
+# ============================================================================
+# SGE 调度系统配置示例
+# ============================================================================
+
+# job_system:
+#   mode: "local"
+#   scheduler: "sge"
+#   check_interval: 30
+#
+#   gpu_header:
+#     - "#!/bin/bash"
+#     - "#$ -N nepactive-gpu"
+#     - "#$ -q gpu.q"
+#     - "#$ -pe smp 4"
+#     - "#$ -l gpu=1"
+#     - "#$ -l h_rt=24:00:00"
+#     - "#$ -o job_$JOB_ID.out"
+#     - "#$ -e job_$JOB_ID.err"
+#     - "#$ -cwd"
+#     - "#$ -V"
+#     - ""
+#     - "module load cuda/11.8"
+#     - "source /path/to/conda/bin/activate nepactive"
+#     - "export PATH=/path/to/gpumd/bin:$PATH"
+#
+#   cpu_header:
+#     - "#!/bin/bash"
+#     - "#$ -N nepactive-cpu"
+#     - "#$ -q all.q"
+#     - "#$ -pe smp 8"
+#     - "#$ -l h_rt=12:00:00"
+#     - "#$ -o job_$JOB_ID.out"
+#     - "#$ -e job_$JOB_ID.err"
+#     - "#$ -cwd"
+#     - "#$ -V"
+#     - ""
+#     - "module load python/3.9"
+
+# ============================================================================
+# 直接执行模式（不使用调度系统）
+# ============================================================================
+
+# job_system:
+#   mode: "direct"
+#   scheduler: "direct"
+#
+#   gpu_header:
+#     - "#!/bin/bash"
+#     - ""
+#     - "# 设置环境"
+#     - "source /path/to/conda/bin/activate nepactive"
+#     - "export PATH=/path/to/gpumd/bin:$PATH"
+#     - "export CUDA_VISIBLE_DEVICES=0"
+#
+#   cpu_header:
+#     - "#!/bin/bash"
+#     - ""
+#     - "source /path/to/venv/bin/activate"

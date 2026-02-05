@@ -1,0 +1,129 @@
+# ============================================================================
+# SLURM 调度系统配置示例
+# ============================================================================
+
+job_system:
+  mode: "local"
+  scheduler: "slurm"
+  check_interval: 30
+
+  gpu_header: |
+    #!/bin/bash
+    #SBATCH --job-name=nepactive-gpu
+    #SBATCH --partition=gpu
+    #SBATCH --nodes=1
+    #SBATCH --ntasks-per-node=1
+    #SBATCH --gres=gpu:1
+    #SBATCH --time=24:00:00
+    #SBATCH --output=job_%j.out
+    #SBATCH --error=job_%j.err
+
+    module purge
+    module load cuda/11.8
+    module load gcc/9.3.0
+
+    source /path/to/conda/bin/activate
+    conda activate nepactive
+
+    export PATH=/path/to/gpumd/bin:$PATH
+
+  cpu_header: |
+    #!/bin/bash
+    #SBATCH --job-name=nepactive-cpu
+    #SBATCH --partition=cpu
+    #SBATCH --ntasks=4
+    #SBATCH --time=12:00:00
+
+    module load python/3.9
+
+# ============================================================================
+# PBS/Torque 调度系统配置示例
+# ============================================================================
+
+# job_system:
+#   mode: "local"
+#   scheduler: "pbs"
+#   check_interval: 30
+#
+#   gpu_header: |
+#     #!/bin/bash
+#     #PBS -N nepactive-gpu
+#     #PBS -q gpu
+#     #PBS -l nodes=1:ppn=4:gpus=1
+#     #PBS -l walltime=24:00:00
+#     #PBS -o job_${PBS_JOBID}.out
+#     #PBS -e job_${PBS_JOBID}.err
+#     #PBS -V
+#
+#     cd $PBS_O_WORKDIR
+#
+#     module load cuda/11.8
+#     source activate nepactive
+#     export PATH=/path/to/gpumd/bin:$PATH
+#
+#   cpu_header: |
+#     #!/bin/bash
+#     #PBS -N nepactive-cpu
+#     #PBS -q cpu
+#     #PBS -l nodes=1:ppn=8
+#     #PBS -l walltime=12:00:00
+#     #PBS -V
+#
+#     cd $PBS_O_WORKDIR
+#     module load python/3.9
+
+# ============================================================================
+# SGE 调度系统配置示例
+# ============================================================================
+
+# job_system:
+#   mode: "local"
+#   scheduler: "sge"
+#   check_interval: 30
+#
+#   gpu_header: |
+#     #!/bin/bash
+#     #$ -N nepactive-gpu
+#     #$ -q gpu.q
+#     #$ -pe smp 4
+#     #$ -l gpu=1
+#     #$ -l h_rt=24:00:00
+#     #$ -o job_$JOB_ID.out
+#     #$ -e job_$JOB_ID.err
+#     #$ -cwd
+#     #$ -V
+#
+#     module load cuda/11.8
+#     source activate nepactive
+#     export PATH=/path/to/gpumd/bin:$PATH
+#
+#   cpu_header: |
+#     #!/bin/bash
+#     #$ -N nepactive-cpu
+#     #$ -q all.q
+#     #$ -pe smp 8
+#     #$ -l h_rt=12:00:00
+#     #$ -cwd
+#     #$ -V
+#
+#     module load python/3.9
+
+# ============================================================================
+# 直接执行模式（不使用调度系统）
+# ============================================================================
+
+# job_system:
+#   mode: "direct"
+#   scheduler: "direct"
+#
+#   gpu_header: |
+#     #!/bin/bash
+#
+#     source activate nepactive
+#     export PATH=/path/to/gpumd/bin:$PATH
+#     export CUDA_VISIBLE_DEVICES=0
+#
+#   cpu_header: |
+#     #!/bin/bash
+#
+#     source activate nepactive
