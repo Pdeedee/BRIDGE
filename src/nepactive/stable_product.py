@@ -5,16 +5,13 @@ import time
 
 class MolecularSolverOptimized:
     def __init__(self, random_seed=None):
-        # 如果提供了种子，使用它；否则使用当前时间
         if random_seed is not None:
             random.seed(random_seed)
             np.random.seed(random_seed)
         else:
-            # 使用时间戳作为种子以确保每次运行都不同
             current_seed = int(time.time() * 1000) % 10000
             random.seed(current_seed)
             np.random.seed(current_seed)
-            print(f"使用随机种子: {current_seed}")
         
         # 定义分子及其原子组成 [C, H, O, N]
         self.molecules = {
@@ -26,21 +23,17 @@ class MolecularSolverOptimized:
             'N2': [0, 0, 0, 2],
             'NH3': [0, 3, 0, 1],
             'O2': [0, 0, 2, 0],
-            'CHN': [1, 1, 0, 1],
-            # 'CH2N2': [1, 2, 0, 2]
         }
 
         self.molecule_energies = {
             'CO': -14.747749,
             'NH3': -19.33091,
             'O2': -9.876768,
-            'CHN': -19.782274,
             'CO2': -22.8497,
             'H2O': -14.086947,
             'CH4': -24.092106,
             'N2': -16.628838,
             'H2': -6.7345247,
-            # 'CH2N2': -31.061832
         }
         
         # 创建原子-分子矩阵
@@ -53,13 +46,6 @@ class MolecularSolverOptimized:
         """验证解的正确性"""
         calculated_atoms = np.dot(self.atom_matrix, solution)
         error = np.sum(np.abs(calculated_atoms - target_atoms))
-        
-        print(f"解验证:")
-        print(f"计算得到的原子: C={calculated_atoms[0]}, H={calculated_atoms[1]}, O={calculated_atoms[2]}, N={calculated_atoms[3]}")
-        print(f"目标原子:       C={target_atoms[0]}, H={target_atoms[1]}, O={target_atoms[2]}, N={target_atoms[3]}")
-        print(f"差值:           C={target_atoms[0]-calculated_atoms[0]}, H={target_atoms[1]-calculated_atoms[1]}, O={target_atoms[2]-calculated_atoms[2]}, N={target_atoms[3]-calculated_atoms[3]}")
-        print(f"总误差: {error}")
-        
         return error
 
     def energy_minimization_solution(self, c, h, o, n):
@@ -86,10 +72,8 @@ class MolecularSolverOptimized:
                 error = self.verify_solution(solution, target_atoms)
                 return solution, error
             else:
-                print("精确求解失败，尝试近似方法")
                 return self.improved_approximate_solution(c, h, o, n)
-        except Exception as e:
-            print(f"精确求解出错: {e}")
+        except Exception:
             return self.improved_approximate_solution(c, h, o, n)
 
     def improved_approximate_solution(self, c, h, o, n):
@@ -147,8 +131,7 @@ class MolecularSolverOptimized:
                         
                         if error == 0:  # 找到完美解
                             break
-            except Exception as e:
-                print(f"线性规划尝试 {attempt+1} 失败: {e}")
+            except Exception:
                 continue
         
         if best_solution is not None:
@@ -161,9 +144,7 @@ class MolecularSolverOptimized:
         target_atoms = np.array([c, h, o, n])
         best_solution = None
         best_error = float('inf')
-        
-        print(f"开始随机搜索，尝试 {num_tries} 次...")
-        
+
         for attempt in range(num_tries):
             # 生成随机解
             solution = np.zeros(len(self.molecules), dtype=int)
@@ -208,13 +189,8 @@ class MolecularSolverOptimized:
             if error < best_error:
                 best_error = error
                 best_solution = solution
-                
-                if attempt % 1000 == 0:
-                    print(f"尝试 {attempt}: 当前最佳误差 = {best_error}")
-                
-                # 如果找到完美解，直接返回
+
                 if error == 0:
-                    print(f"在第 {attempt+1} 次尝试中找到完美解!")
                     break
         
         if best_solution is not None:
@@ -231,9 +207,7 @@ class MolecularSolverOptimized:
         
         if current_error == 0:
             return current_solution, current_error
-            
-        print(f"开始迭代改进，初始误差: {current_error}")
-        
+
         for iteration in range(max_iterations):
             improved = False
             
@@ -258,8 +232,7 @@ class MolecularSolverOptimized:
                         current_solution = new_solution
                         current_error = new_error
                         improved = True
-                        print(f"迭代 {iteration+1}: 改进到误差 {current_error}")
-                        
+
                         if current_error == 0:
                             self.verify_solution(current_solution, target_atoms)
                             return current_solution, current_error
@@ -281,8 +254,7 @@ class MolecularSolverOptimized:
                                     current_solution = new_solution
                                     current_error = new_error
                                     improved = True
-                                    print(f"迭代 {iteration+1}: 双重调整改进到误差 {current_error}")
-                                    
+
                                     if current_error == 0:
                                         self.verify_solution(current_solution, target_atoms)
                                         return current_solution, current_error
@@ -296,7 +268,6 @@ class MolecularSolverOptimized:
             
             # 如果还是没有改进，就停止
             if not improved:
-                print(f"在迭代 {iteration+1} 无法继续改进")
                 break
         
         self.verify_solution(current_solution, target_atoms)
@@ -304,47 +275,35 @@ class MolecularSolverOptimized:
 
     def solve(self, c, h, o, n, method=None):
         """使用指定方法找到解"""
-        print(f"\n=== 求解 C={c}, H={h}, O={o}, N={n} ===")
-        
         if method == 'energy':
-            print("使用能量最小化方法")
             return self.energy_minimization_solution(c, h, o, n)
         elif method == 'fixed_random':
-            print("使用修复后的随机方法")
             return self.fixed_random_solution(c, h, o, n)
         elif method == 'iterative':
-            print("使用迭代改进方法")  
             return self.iterative_improvement(c, h, o, n)
         else:
-            # 默认尝试多种方法
             methods = [
                 ('energy', lambda: self.energy_minimization_solution(c, h, o, n)),
                 ('iterative', lambda: self.iterative_improvement(c, h, o, n, 50)),
                 ('fixed_random', lambda: self.fixed_random_solution(c, h, o, n, 5000))
             ]
-            
+
             best_solution = None
             best_error = float('inf')
-            best_method = None
-            
+
             for name, method_func in methods:
-                print(f"\n--- 尝试方法: {name} ---")
                 try:
                     solution, error = method_func()
                     if error < best_error:
                         best_error = error
-                        best_solution = solution  
-                        best_method = name
-                        
+                        best_solution = solution
+
                     if error == 0:
-                        print(f"方法 {name} 找到完美解!")
                         break
-                        
-                except Exception as e:
-                    print(f"方法 {name} 失败: {e}")
+
+                except Exception:
                     continue
-            
-            print(f"\n最佳方法: {best_method}, 误差: {best_error}")
+
             return best_solution, best_error
     
     def format_solution(self, solution):

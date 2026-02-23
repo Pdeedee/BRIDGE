@@ -49,7 +49,7 @@ dump_exyz       {dump_freq}
 run			    {run_steps}
 """
 
-nphugo_template = """
+nphugo_mttk_template = """
 replicate       {replicate_cell}
 potential		nep.txt
 minimize sd 1.0e-6 1000
@@ -251,7 +251,7 @@ dyn.run(steps)
 
 """
 
-nphugo_pytemplate = """
+nphugo_mttk_pytemplate = """
 from ase.io import  read,write
 from nepactive.logger import MDLogger
 from ase import units
@@ -290,7 +290,7 @@ dyn.attach(traj.write, interval={dump_freq})
 dyn.run(steps)
 """
 
-nphugo_pytemplate_shock = """
+nphugo_mttk_pytemplate_shock = """
 from ase.io import  read,write
 from nepactive.logger import MDLogger
 from ase import units
@@ -323,6 +323,52 @@ p0 = 1*units.GPa
 v0 = {v0}
 pressure = {pressure} * units.GPa
 dyn = NPHugo(atoms, e0 = e0, p0 = p0, v0=v0, p_stop=pressure, timestep=timestep, tchain=3, pchain=3, pfreq=0.025, tfreq=0.1)
+dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
+        volume=True, mode="w"), interval={dump_freq})
+dyn.attach(traj.write, interval={dump_freq})
+dyn.run(steps)
+"""
+
+nphugo_scr_pytemplate = """
+# NPHugo with SCR (Stochastic Cell Rescaling) barostat + BDP thermostat
+# Ported from GPUMD ensemble npt_scr
+# 参数说明（与 GPUMD 输入一致）:
+#   tau_t: BDP 恒温器弛豫时间，单位 timestep（GPUMD 默认 100）
+#   tau_p: SCR 气压计弛豫时间，单位 timestep（GPUMD 典型 1000~2000）
+#   elastic_modulus: 体积模量 (GPa)，默认 15（含能材料典型值，一般不用改）
+#   pmode: 压力模式 iso/x/y/z
+#   pressure: 目标压力 (GPa)
+#   e0/p0/v0: Hugoniot 参考态（能量 eV，压力 eV/Å³，体积 Å³）
+from ase.io import read, write
+from nepactive.logger import MDLogger
+from ase import units
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from ase.io.trajectory import Trajectory
+import numpy as np
+from ase.optimize import LBFGS
+from nepactive.npt_scr import NPT_SCR_Hugo
+from mattersim.forcefield import MatterSimCalculator
+calculator = MatterSimCalculator(device="cuda")
+atoms = read("{structure}")
+elements = atoms.get_chemical_symbols()
+sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
+atoms.calc = calculator
+opt = LBFGS(atoms)
+opt.run(fmax=0.05, steps=40)
+steps = {steps}
+write("opt.pdb", atoms)
+temperature_K = 300
+MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K)
+traj = Trajectory('out.traj', 'w', atoms)
+timestep = {time_step} * units.fs
+e0 = {e0}
+p0 = {p0}
+v0 = {v0}
+pressure = {pressure}
+dyn = NPT_SCR_Hugo(atoms, timestep=timestep, pressure=pressure,
+                    e0=e0, p0=p0, v0=v0,
+                    tau_t={tau_t}, tau_p={tau_p},
+                    pmode="{pmode}")
 dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
         volume=True, mode="w"), interval={dump_freq})
 dyn.attach(traj.write, interval={dump_freq})

@@ -18,8 +18,8 @@ import itertools
 from concurrent.futures import ThreadPoolExecutor
 import re
 import copy
-from nepactive.stable import StableRun
-from nepactive.template import npt_template,nphugo_template,nvt_template,msst_template,model_devi_template,nep_in_template,nphugo_pytemplate,nvt_pytemplate,continue_pytemplate
+from nepactive.stable import InitRun, ShockRun
+from nepactive.template import npt_template,nphugo_mttk_template,nvt_template,msst_template,model_devi_template,nep_in_template,nphugo_mttk_pytemplate,nvt_pytemplate,continue_pytemplate
 from nepactive.plt import gpumdplt,nep_plt,ase_plt
 from nepactive import parse_yaml
 from nepactive.force import force_main
@@ -118,14 +118,14 @@ def calculate_properties(work_dir:str = None, idata:dict = None):
         shutil.copy("POSCAR","init")
     work_dir = f"{work_dir}/init"
     os.chdir(work_dir)
-    stable_data:dict = idata.get("stable")
+    stable_data:dict = idata.get("init", idata.get("stable", {}))
 
     stable_data["python_interpreter"] = idata.get("python_interpreter", "python")
     stable_data["task_per_gpu"] = idata.get("task_per_gpu", 1)
     stable_data["gpu_available"] = idata.get("gpu_available", [0,1,2,3])
 
-    stable_run = StableRun_OB(stable_data)
-    stable_run.calculate_properties()
+    init_run = InitRun(idata, stable_data)
+    init_run.calculate_properties()
 
 mass_H = atomic_masses[atomic_numbers['H']]  # 氢
 mass_C = atomic_masses[atomic_numbers['C']]  # 碳
@@ -228,7 +228,7 @@ class Nepactive_OB(Nepactive):
         os.chdir(work_dir)
         # if if_stable_run:
         rho = self.idata.get("rho", None)
-        stable_data:dict = self.idata.get("stable")
+        stable_data:dict = self.idata.get("init", self.idata.get("stable", {}))
         stable_data["steps"] = self.idata.get("ini_traj_steps", 40000)
 
         stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
@@ -238,18 +238,17 @@ class Nepactive_OB(Nepactive):
         if rho:
             dlog.info(f"rho is {rho}, will run stable run for rho={rho}")
             stable_data["rho"] = rho
-        stable_run = StableRun_OB(stable_data)
-        stable_run.calculate_properties()
-        
-        # stable_run.calculate_properties()
-        for ii in range(stable_run.struc_num):
+        init_run = InitRun(self.idata, stable_data)
+        init_run.calculate_properties()
+
+        for ii in range(init_run.struc_num):
             os.chdir(work_dir)
             os.makedirs(f"struc.{ii:03d}",exist_ok=True)
             struc_dir = os.path.abspath(f"struc.{ii:03d}")
             struc_dirs.append(struc_dir)
             os.chdir(struc_dir)
             
-            stable_run.make_preparations()
+            init_run.make_preparations()
 
         # original_make = stable_data.get("original_make",True)
         # if original_make:
@@ -262,7 +261,7 @@ class Nepactive_OB(Nepactive):
             atoms = read(f"{self.work_dir}/POSCAR")
             os.makedirs("structure",exist_ok=True)
             write(f"structure/POSCAR",atoms)
-            stable_run.make_preparations()
+            init_run.make_preparations()
 
         OB_gives = self.idata.get("OB_gives", [])
 
@@ -276,7 +275,7 @@ class Nepactive_OB(Nepactive):
             atoms = read(f"{self.work_dir}/OBfs/OB_{OB_gives[-1]}.pdb")
             os.makedirs("structure", exist_ok=True)
             write("structure/POSCAR", atoms)
-            stable_run.make_preparations()
+            init_run.make_preparations()
             
             
         ase_ensemble_files = self.idata.get("ini_ase_ensemble_files")
@@ -467,35 +466,34 @@ class Nepactive_OB(Nepactive):
                 record_iter(record, self.ii, jj)
 
     def shock(self):
-        
-        stable_data = self.idata.get("stable", None)
-        rhos = stable_data.get("rhos", [1.0, 1.2, 1.4, 1.6, 1.8, 2.0])
-        if stable_data is None:
-            raise ValueError("stable data is None, please check your in.yaml")
-        
-        stable_data["pot"] = "nep"
-        if not stable_data.get("nep", None):
-            stable_data["nep"] = os.path.join(os.path.abspath(os.path.abspath(os.getcwd())),"nep.txt")
-        stable_data["original_make"] = False
+
+        shock_data = self.idata.get("shock", self.idata.get("stable", None))
+        rhos = shock_data.get("rhos", [1.0, 1.2, 1.4, 1.6, 1.8, 2.0])
+        if shock_data is None:
+            raise ValueError("shock data is None, please check your in.yaml")
+
+        shock_data["pot"] = shock_data.get("pot", "nep")
+        if not shock_data.get("nep", None):
+            shock_data["nep"] = os.path.join(os.path.abspath(os.path.abspath(os.getcwd())),"nep.txt")
         struture_files = os.path.join(os.path.abspath(os.getcwd()), "POSCAR")
 
-        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
-        stable_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
-        stable_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
+        shock_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        shock_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
+        shock_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
 
-        stable_data["structure_files"] = [struture_files]
+        shock_data["structure_files"] = [struture_files]
         if not os.path.isfile("properties.txt"):
             raise ValueError("properties.txt is not found, please check your in.yaml")
         for rho in rhos:
             os.chdir(self.work_dir)
             os.makedirs(f"{rho}",exist_ok=True)
             os.chdir(f"{rho}")
-            stable_data["rho"] = rho
+            shock_data["rho"] = rho
             dlog.info(f"Running shock velocity test for rho={rho}")
             os.system(f"ln -snf {self.work_dir}/POSCAR POSCAR")
             os.system(f"ln -snf {self.work_dir}/properties.txt properties.txt")
-            stable_task = StableRun(stable_data)
-            stable_task.run()
+            shock_task = ShockRun(self.idata, shock_data)
+            shock_task.run()
             dlog.info(f"Shock velocity test for rho={rho} completed")
 
 
@@ -506,17 +504,17 @@ class Nepactive_OB(Nepactive):
         write(f"{work_dir}/POSCAR", atoms)
         os.system(f"ln -snf {self.work_dir}/init/properties.txt {work_dir}/properties.txt")
         os.chdir(work_dir)
-        stable_data = self.idata.get("stable", None)
-        assert stable_data is not None, "stable data is None"
+        shock_data = self.idata.get("shock", self.idata.get("stable", None))
+        assert shock_data is not None, "shock data is None"
         nep_file = os.path.join(self.iter_dir, "00.nep/task.000000/nep.txt")
-        stable_data["nep"] = nep_file
-        stable_data["pot"] = "nep"
+        shock_data["nep"] = nep_file
+        shock_data["pot"] = shock_data.get("pot", "nep")
 
-        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
-        stable_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
-        stable_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
+        shock_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        shock_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
+        shock_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
 
-        original_make = stable_data.get("original_make", False)
+        original_make = shock_data.get("original_make", False)
         final_xyzs = glob(f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd/task.[0-9][0-9][0-9][0-9][0-9][0-9]/final.xyz")
         final_xyzs.sort()
 
@@ -526,11 +524,11 @@ class Nepactive_OB(Nepactive):
             structure_files = []
 
         final_xyz = final_xyzs[-1]
-        
+
         rho = self.idata.get("rho", None)
         if rho:
             dlog.info(f"rho is {rho}, will run shock velocity test for rho={rho}")
-            stable_data["rho"] = rho
+            shock_data["rho"] = rho
         structure_files.append(final_xyz)
 
         for ii, struc in enumerate(structure_files):
@@ -540,20 +538,20 @@ class Nepactive_OB(Nepactive):
             dlog.info(f"start running {ii}th task of {len(struc)}")
             atoms = read(struc)
             write("POSCAR", atoms)
-            stable_task = StableRun(stable_data)
-            stable_data["structure_files"] = [struc]
-            stable_task.run()
+            shock_data["structure_files"] = [struc]
+            shock_task = ShockRun(self.idata, shock_data)
+            shock_task.run()
             if ii==0:
                 with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
                     f.write(f"# {self.ii}\n")
-                    np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
+                    np.savetxt(f, shock_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
             else:
                 with open(f"{self.work_dir}/shock_vel_OB.txt", "a") as f:
                     f.write(f"# {self.ii}\n")
-                    np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
-            
+                    np.savetxt(f, shock_task.shock_vels, fmt='%.3f', header='Shock velocities (m/s) for each rho')
+
             os.chdir(f"{work_dir}")
-        dlog.info(f"Shock velocity test completed, results is {stable_task.shock_vels} km/s")
+        dlog.info(f"Shock velocity test completed, results is {shock_task.shock_vels} km/s")
 
 
 
@@ -660,7 +658,7 @@ class Nepactive_OB(Nepactive):
         global_work_dir = os.path.abspath(self.work_dir)
         work_dir = os.path.abspath(os.path.join(self.iter_dir, "00.nep"))
         pot_num = self.idata.get("pot_num", 4)
-        init:bool = self.idata.get("init", True)
+        use_init_data:bool = self.idata.get("use_init_data", True)
 
         os.makedirs(work_dir, exist_ok=True)
         os.chdir(work_dir)
@@ -680,7 +678,7 @@ class Nepactive_OB(Nepactive):
         files = []
         testfiles = []
         # 注意每一代有没有划分训练集和测试集
-        if init == True:
+        if use_init_data == True:
             print(f"{os.path.isfile(os.path.join(global_work_dir, 'init/train.xyz'))}")
             # 直接调用 extend 方法，不要尝试将其结果赋值
             files.extend(glob(os.path.join(global_work_dir, "init/train.xyz")))
@@ -835,7 +833,7 @@ class Nepactive_OB(Nepactive):
                 dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
                 p0 = 0
                 
-            text = nphugo_template.format(
+            text = nphugo_mttk_template.format(
                 time_step=time_step,
                 run_steps=run_steps-20000,
                 dump_freq=dump_freq,

@@ -17,16 +17,44 @@ dlogf.setFormatter(dlogf_formatter)
 dlog.addHandler(dlogf)
 logging.basicConfig(level=logging.WARNING)
 
+def _migrate_stable_config(data: dict) -> dict:
+    """将旧 stable: 配置自动拆分为 init: + shock:"""
+    if "stable" in data and "init" not in data and "shock" not in data:
+        s = data["stable"]
+        data["init"] = {
+            "structure": s.get("structure", "POSCAR"),
+            "struc_num": s.get("struc_num", 1),
+            "pressure": s.get("pressure", [20, 40, 60, 80]),
+            "temperature": s.get("temperature", [3000]),
+            "steps": s.get("steps", 40000),
+            "time_step": s.get("time_step", 0.2),
+            "dump_freq": s.get("dump_freq", 10),
+            "tau_t": s.get("tau_t", 100),
+            "tau_p": s.get("tau_p", 2000),
+            "pmode": s.get("pmode", "iso"),
+            "tfreq": s.get("tfreq"),
+            "pfreq": s.get("pfreq"),
+            "original_make": s.get("original_make", True),
+        }
+        data["shock"] = {
+            "structure": s.get("structure", "POSCAR"),
+            "pressure_list": s.get("shock_pressure_list", [20, 25, 30, 35, 40, 45, 50, 55]),
+            "steps": s.get("shock_steps", 600000),
+            "time_step": s.get("time_step", 0.2),
+            "dump_freq": s.get("dump_freq", 10),
+            "analyze_range": s.get("analyze_range", [0.5, 1]),
+            "pot": s.get("shock_pot", "nep"),
+            "tau_t": s.get("tau_t", 100),
+            "tau_p": s.get("tau_p", 2000),
+            "pmode": s.get("pmode", "iso"),
+            "original_make": s.get("original_make", False),
+        }
+        dlog.info("Migrated old 'stable:' config to 'init:' + 'shock:'")
+    return data
+
+
 def parse_yaml(file):
     with open(file, encoding='utf-8') as f:
         data = yaml.safe_load(f)
-        # data = yaml.safe_load("in.yaml")
-    # if os.path.exists(f"{os.path.dirname(file)}/nostrucnum"):
-    #     data["stable"]["struc_num"] = 0
-    #     data["structure_files"] = ["POSCAR"]
-    #     data["model_devi_general"][0]["structure_id"] = [[0]]
-    # else:
-    #     data["stable"]["struc_num"] = 1
-    #     data["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
-    #     data["model_devi_general"][0]["structure_id"] = [[0,1]]
+    data = _migrate_stable_config(data)
     return data

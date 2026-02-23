@@ -44,45 +44,75 @@ OB_gives: [0,54]
 model_devi_general:
   -
     # id: "11-24"
-    ensembles: ["nphugo","nvt"]      # 主动学习用来采样的动力学系综，爆速模拟推荐选取"nphugo"
+    ensembles: ["nphugo_scr","nvt"]      # 主动学习采样系综，可选: "nphugo_mttk"(Nose-Hoover MTTK), "nphugo_scr"(SCR气压计), "nvt", "npt", "msst"
     structure_id: [[0,1],[0,1]]        # 动力学选取的结构文件的编号
     pressure: [60,35,10] # 模拟的压力列表，单位为GPa
-    pperiod: 2000              # 模拟的压浴参数设置，单位为步数
+    pperiod: 2000              # 模拟的压浴参数设置，单位为步数 (仅 nphugo/GPUMD 使用)
     temperature: [3000] # 模拟的温度列表，单位为K
 
-stable:                        # 用来跑爆速测试与初始数据集部分的设置
-  # original_make: true          # 爆速测试的原始make设置
-  structure: "POSCAR"          # 用来跑爆速测试的结构文件名
-  dump_freq: 10                # 用来跑爆速测试的dump频率，单位为步数
-  struc_num: 1                 # 用来跑爆速的初始结构
-  pressure: [20,40,60,80]     # 初始数据集的所采取的压力列表
-  temperature: [3000]      # 初始数据集的温度列表
+init:                          # 初始产物结构生成设置
+  structure: "POSCAR"          # 结构文件名
+  struc_num: 1                 # 初始结构数量
+  pressure: [20,40,60,80]      # 初始数据集的压力列表，单位为GPa
+  temperature: [3000]          # 初始数据集的温度列表，单位为K
   steps: 40000                 # 初始数据集的运行步数
+  time_step: 0.2               # 时间步长，单位为fs
+  dump_freq: 10                # dump频率，单位为步数
+  # tau_t: 100                 # BDP 恒温器弛豫时间 (默认 100)
+  # tau_p: 2000                # SCR 气压计弛豫时间 (默认 2000)
+  # pmode: "iso"               # 压力模式 (默认 "iso")
 
-  gpumd_pressure_list: [20,25,30,35,40,45,50,55] # 爆速测试的压力列表
-  gpumd_steps: 600000          # 爆速测试的gpumd运行步数 
-  time_step: 0.2               # 爆速测试的时间步长
-  analyze_range: [0.5,1]       # 爆速测试的分析范围
+shock:                         # Hugoniostat 爆速测试设置
+  structure: "POSCAR"          # 结构文件名
+  pressure_list: [20,25,30,35,40,45,50,55] # 爆速测试的压力列表，单位为GPa
+  steps: 100000                # 爆速测试的运行步数
+  time_step: 0.4               # 时间步长，单位为fs
+  dump_freq: 10                # dump频率，单位为步数
+  analyze_range: [0.8,1]       # 爆速测试的分析范围
+  pot: "mattersim"                   # 势函数: "nep"(GPUMD, 默认) / "mattersim"
+  # tau_t: 100                 # BDP 恒温器弛豫时间 (默认 100)
+  # tau_p: 2000                # SCR 气压计弛豫时间 (默认 2000)
+  # pmode: "iso"               # 压力模式 (默认 "iso")
 
-#ssh_machine
-fp_command: "mpirun -np 96 vasp_std" 
-ssh_username: "sch9797@BSCC-T6"
-ssh_hostname: "ssh.cn-zhongwei-1.paracloud.com"
-ssh_port: 22
+# VASP INCAR 参数覆盖（基于 MPStaticSet，默认关闭自旋 ISPIN=1）
+# 不配置则使用 MPStaticSet 默认值 + ISPIN=1
+incar_settings:
+  ALGO: Fast
+  EDIFF: 1.0e-06
+  ENCUT: 700
+  ISMEAR: 0
+  ISPIN: 1               # 关闭自旋
+  IVDW: 11               # DFT-D3 色散校正
+  KSPACING: 0.7           # K点间距，设置后不生成 KPOINTS 文件
+  LASPH: false
+  LREAL: false
+  LWAVE: false
+  LCHARG: false
+  NELM: 100
+  NSW: 0
+  PREC: Accurate
+  SIGMA: 0.05
+  NPAR: 4
 
-
-ssh_timeout: 20
-remote_root: "/public1/home/sch9797/liu/nep"
-group_numbers: 10
-slurm_header_script:
-  - "#!/bin/bash"
-  - "#SBATCH --job-name=gpumd"
-  - "#SBATCH -p v6_384"
-  - "#SBATCH -N 1"
-  - "#SBATCH -n 96"
-  - "source /public1/soft/modules/module.sh"
-  - "module load mpi/oneAPI/2022.1"
-  - "export PATH=/public1/home/sch9797/software-sch9797/6.3.0-vtst+opt+sol+wannier:$PATH"
+#remote
+remote:
+  dirs: ["."]                                                          # remote 扫描的本地目录列表，默认当前目录
+  fp_command: "mpirun -np 96 vasp_std"
+  ssh_username: "sch9797@BSCC-T6"
+  ssh_hostname: "ssh.cn-zhongwei-1.paracloud.com"
+  ssh_port: 22
+  ssh_timeout: 20
+  remote_root: "/public1/home/sch9797/liu/nep"
+  group_numbers: 10
+  slurm_header_script:
+    - "#!/bin/bash"
+    - "#SBATCH --job-name=gpumd"
+    - "#SBATCH -p v6_384"
+    - "#SBATCH -N 1"
+    - "#SBATCH -n 96"
+    - "source /public1/soft/modules/module.sh"
+    - "module load mpi/oneAPI/2022.1"
+    - "export PATH=/public1/home/sch9797/software-sch9797/6.3.0-vtst+opt+sol+wannier:$PATH"
 
 
 shock_test_interval: 1

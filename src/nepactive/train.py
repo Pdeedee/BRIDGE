@@ -30,14 +30,14 @@ from nepactive.force import force_main
 from nepactive.packmol import make_structure
 from nepactive.plt import ase_plt, gpumdplt, nep_plt
 from nepactive.remote import Remotetask
-from nepactive.stable import StableRun
+from nepactive.stable import InitRun, ShockRun
 from nepactive.template import (
     continue_pytemplate,
     model_devi_template,
     msst_template,
     nep_in_template,
-    nphugo_pytemplate,
-    nphugo_template,
+    nphugo_mttk_pytemplate,
+    nphugo_mttk_template,
     npt_template,
     nvt_pytemplate,
     nvt_template,
@@ -112,15 +112,15 @@ class Nepactive(object):
         if self.shock_run:
             self.check_inistruc()
             if os.path.exists(f"{self.work_dir}/nostrucnum"):
-                self.idata["stable"]["struc_num"] = 0
+                self.idata.setdefault("init", {})["struc_num"] = 0
                 self.idata["structure_files"] = self.idata.get("structure_files",["POSCAR"])
                 self.idata["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0]])
             else:
-                self.idata["stable"]["struc_num"] = 1
+                self.idata.setdefault("init", {})["struc_num"] = 1
                 self.idata["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
                 self.idata["model_devi_general"][0]["structure_id"] = [[0,1]]
         else:
-            self.idata["stable"]["struc_num"] = 0
+            self.idata.setdefault("init", {})["struc_num"] = 0
         # dlog.info(f"self.idata:{self.idata}")
         # print(f"structure_files: {self.idata['structure_files']}")
             
@@ -189,11 +189,11 @@ class Nepactive(object):
             shutil.copy("POSCAR","init")
         work_dir = f"{self.work_dir}/init"
         os.chdir(work_dir)
-        stable_data:dict = self.idata.get("stable")
-        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
-        stable_data["tfreq"] = self.idata.get("tfreq", None)
-        stable_data["pfreq"] = self.idata.get("pfreq", None)
-        stable_run = StableRun(self.idata,stable_data)
+        init_data:dict = self.idata.get("init", {})
+        init_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        init_data["tfreq"] = self.idata.get("tfreq", None)
+        init_data["pfreq"] = self.idata.get("pfreq", None)
+        init_run = InitRun(self.idata, init_data)
         if not self.shock_run:
             dlog.info(f"shock_run is False, skip calculate properties")
             format = '%12.5f'
@@ -201,7 +201,7 @@ class Nepactive(object):
             np.savetxt("properties.txt",np.array(property).reshape(1, -1),fmt=format,encoding="utf-8")
             # np.savetxt('frame_properties.txt', data, fmt='%12.2f', header="shortest_d, molecule_num, molecule_density")
         else:
-            stable_run.calculate_properties()
+            init_run.calculate_properties()
 
 
     def make_init_ase_run(self):
@@ -216,36 +216,35 @@ class Nepactive(object):
         os.chdir(work_dir)
         # if if_stable_run:
         rho = self.idata.get("rho", None)
-        stable_data:dict = self.idata.get("stable")
-        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        init_data:dict = self.idata.get("init", {})
+        init_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
         if rho:
             dlog.info(f"rho is {rho}, will run stable run for rho={rho}")
-            stable_data["rho"] = rho
-        # stable_data["struc_num"] = 1
-        stable_run = StableRun(self.idata, stable_data)
-        stable_run.calculate_properties()
+            init_data["rho"] = rho
+        init_run = InitRun(self.idata, init_data)
+        init_run.calculate_properties()
         if self.shock_run:
             if not os.path.exists(f"{self.work_dir}/nostrucnum"):                
                 self.idata["structure_files"]=["POSCAR","init/struc.000/structure/POSCAR"]
                 self.idata["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0,1],[0,1]])
                 self.idata["model_devi_general"][0]["temperature"] = [3000]
-                self.idata["model_devi_general"][0]["ensemble"] = ["nphugo","nvt"]
+                self.idata["model_devi_general"][0]["ensemble"] = ["nphugo_scr","nvt"]
                 try:
-                    for ii in range(stable_run.struc_num):
+                    for ii in range(init_run.struc_num):
                         os.chdir(work_dir)
                         os.makedirs(f"struc.{ii:03d}",exist_ok=True)
                         struc_dir = os.path.abspath(f"struc.{ii:03d}")
                         # struc_dirs.append(struc_dir)
                         os.chdir(struc_dir)
-                        stable_run.make_preparations()
+                        init_run.make_preparations()
                 except ValueError as e:
                     dlog.warning(f"Error in make preparations: {e}")
                     os.system(f"touch {self.work_dir}/nostrucnum")
                     if self.shock_run:
-                        self.idata["stable"]["struc_num"] = 0
+                        self.idata.setdefault("init", {})["struc_num"] = 0
                         self.idata["structure_files"] = self.idata.get("structure_files",["POSCAR"])
                         self.idata["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0],[0]])
-                        self.idata["model_devi_general"][0]["ensemble"] = ["nphugo","nvt"]
+                        self.idata["model_devi_general"][0]["ensemble"] = ["nphugo_scr","nvt"]
                         self.idata["model_devi_general"][0]["temperature"] = [3000]
                         dlog.warning("Exception occurred, set struc_num to 0 and continue")
 
@@ -263,10 +262,8 @@ class Nepactive(object):
             dlog.info(f"Processing additional structure file: {struct_file}")
             atoms = read(f"{self.structure_prefix}/{struct_file}")
             write("structure/POSCAR",atoms)
-            stable_run.make_preparations()
+            init_run.make_preparations()
 
-        # original_make = stable_data.get("original_make",True)
-        # if original_make:
         if True:
             os.chdir(work_dir)
             os.makedirs("original",exist_ok=True)
@@ -276,8 +273,8 @@ class Nepactive(object):
             atoms = read(f"{self.work_dir}/POSCAR")
             os.makedirs("structure",exist_ok=True)
             write(f"structure/POSCAR",atoms)
-            stable_run.make_preparations()
-            
+            init_run.make_preparations()
+
         ase_ensemble_files = self.idata.get("ini_ase_ensemble_files")
         if ase_ensemble_files:
             ase_ensemble_files:list[str] = [os.path.abspath(path) for path in ase_ensemble_files]
@@ -380,23 +377,24 @@ class Nepactive(object):
     def parse_yaml(self,file):
         with open(file, encoding='utf-8') as f:
             data = yaml.safe_load(f)
-            # data = yaml.safe_load("in.yaml")
+        from nepactive import _migrate_stable_config
+        data = _migrate_stable_config(data)
         if self.shock_run:
             if os.path.exists(f"{os.path.dirname(file)}/nostrucnum"):
-                data["stable"]["struc_num"] = 0
+                data.setdefault("init", {})["struc_num"] = 0
                 data["structure_files"] = self.idata.get("structure_files",["POSCAR"])
                 data["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0]])
-                data["model_devi_general"][0]["ensemble"] = ["nphugo","nvt"]
+                data["model_devi_general"][0]["ensemble"] = ["nphugo_scr","nvt"]
                 data["model_devi_general"][0]["temperature"] = [3000]
                 data["model_devi_general"][0]["structure_id"] = [[0],[0]]
             else:
-                data["stable"]["struc_num"] = 1
+                data.setdefault("init", {})["struc_num"] = 1
                 data["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
-                data["model_devi_general"][0]["ensemble"] = ["nphugo","nvt"]
+                data["model_devi_general"][0]["ensemble"] = ["nphugo_scr","nvt"]
                 data["model_devi_general"][0]["temperature"] = [3000]
                 data["model_devi_general"][0]["structure_id"] = [[0,1],[0,1]]
         else:
-            self.idata["stable"]["struc_num"] = 0
+            self.idata.setdefault("init", {})["struc_num"] = 0
         return data
 
     def make_loop_train(self):
@@ -475,42 +473,40 @@ class Nepactive(object):
 
     def shock(self):
         work_dir = os.getcwd()
-        stable_data = self.idata.get("stable", None)
+        shock_data = self.idata.get("shock", None)
         rhos = self.idata.get("rhos", None)
         if rhos is None:
-            rhos = stable_data.get("rhos", [1.0, 1.2, 1.4, 1.6, 1.8, 2.0])
-        if stable_data is None:
-            raise ValueError("stable data is None, please check your in.yaml")
-        
-        stable_data["pot"] = "nep"
-        if not stable_data.get("nep", None):
-            stable_data["nep"] = os.path.join(os.path.abspath(os.path.abspath(os.getcwd())),"nep.txt")
-        stable_data["original_make"] = False
+            rhos = shock_data.get("rhos", [1.0, 1.2, 1.4, 1.6, 1.8, 2.0])
+        if shock_data is None:
+            raise ValueError("shock data is None, please check your in.yaml")
+
+        shock_data["pot"] = shock_data.get("pot", "nep")
+        if shock_data["pot"] == "nep":
+            if not shock_data.get("nep", None):
+                shock_data["nep"] = os.path.join(os.path.abspath(os.getcwd()), "nep.txt")
         struture_files = os.path.join(os.path.abspath(os.getcwd()), "POSCAR")
-        stable_data["structure_files"] = [struture_files]
-        
-        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
-        stable_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
-        stable_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
+        shock_data["structure_files"] = [struture_files]
+
+        shock_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        shock_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
+        shock_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
 
         if not os.path.isfile("properties.txt"):
             raise ValueError("properties.txt is not found, please check your in.yaml")
-        
-        # shock_vels = []
+
         for rho in rhos:
             os.chdir(self.work_dir)
             os.makedirs(f"{rho}",exist_ok=True)
             os.chdir(f"{rho}")
-            stable_data["rho"] = rho
+            shock_data["rho"] = rho
             dlog.info(f"Running shock velocity test for rho={rho}")
             os.system(f"ln -snf {self.work_dir}/POSCAR POSCAR")
             os.system(f"ln -snf {self.work_dir}/properties.txt properties.txt")
-            stable_task = StableRun(self.idata, stable_data)
-            stable_task.run()
-            # shock_vels.append(stable_task.shock_vels)
+            shock_task = ShockRun(self.idata, shock_data)
+            shock_task.run()
             dlog.info(f"Shock velocity test for rho={rho} completed")
             with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
-                np.savetxt(f, np.array(stable_task.shock_vels), fmt='%.3f', header='Shock velocities (km/s) for each rho')
+                np.savetxt(f, np.array(shock_task.shock_vels), fmt='%.3f', header='Shock velocities (km/s) for each rho')
 
 
     def shock_vel_test(self):
@@ -521,17 +517,17 @@ class Nepactive(object):
         write(f"{work_dir}/POSCAR", atoms)
         os.system(f"ln -snf {self.work_dir}/init/properties.txt {work_dir}/properties.txt")
         os.chdir(work_dir)
-        stable_data = self.idata.get("stable", None)
-        assert stable_data is not None, "stable data is None"
+        shock_data = self.idata.get("shock", None)
+        assert shock_data is not None, "shock data is None"
         nep_file = os.path.join(self.iter_dir, "00.nep/task.000000/nep.txt")
-        stable_data["nep"] = nep_file
-        stable_data["pot"] = "nep"
-        original_make = stable_data.get("original_make", False)
+        shock_data["nep"] = nep_file
+        shock_data["pot"] = shock_data.get("pot", "nep")
+        original_make = shock_data.get("original_make", False)
 
-        stable_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
-        stable_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
-        stable_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
-        
+        shock_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
+        shock_data["task_per_gpu"] = self.idata.get("task_per_gpu", 1)
+        shock_data["gpu_available"] = self.idata.get("gpu_available", [0,1,2,3])
+
         if original_make:
             structure_files = [os.path.abspath(self.idata.get("structure_files")[0])]
         else:
@@ -540,18 +536,67 @@ class Nepactive(object):
         final_xyzs.sort()
         final_xyz = final_xyzs[-1]
         structure_files.append(final_xyz)
-        stable_data["structure_files"] = structure_files
+        shock_data["structure_files"] = structure_files
         rho = self.idata.get("rho", None)
         if rho:
             dlog.info(f"rho is {rho}, will run shock velocity test for rho={rho}")
-            stable_data["rho"] = rho
+            shock_data["rho"] = rho
 
-        stable_task = StableRun(self.idata, stable_data)
-        stable_task.run()
-        with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
-            f.write(f"#{self.ii}\n")
-            np.savetxt(f, stable_task.shock_vels, fmt='%.3f', header='Shock velocities (km/s) for each rho')
-        dlog.info(f"Shock velocity test completed, results is {stable_task.shock_vels} km/s")
+        shock_task = ShockRun(self.idata, shock_data)
+        shock_task.run()
+
+        # 计算爆热
+        from nepactive.hod import calculate_heat_of_detonation
+        dlog.info("Calculating heat of detonation...")
+        try:
+            gpu_id = shock_data["gpu_available"][0] if shock_data["gpu_available"] else 0
+            job_system = self.idata.get("job_system", None)
+            Q_release = calculate_heat_of_detonation(work_dir, nep_file, gpu_id, job_system)
+            dlog.info(f"Heat of detonation: {Q_release:.2f} kJ/kg")
+        except Exception as e:
+            dlog.error(f"Failed to calculate heat of detonation: {e}")
+            Q_release = None
+
+        # 保存结果到 CSV 格式
+        import csv
+        shock_vel_csv = f"{self.work_dir}/shock_vel.csv"
+
+        # shock_vels 形状 (N, 4): D_v, V_CJ, P_CJ, rho
+        sv = np.array(shock_task.shock_vels)
+        if sv.ndim == 1:
+            sv = sv.reshape(1, -1)
+        dv_mean = np.mean(sv[:, 0]) if len(sv) > 0 else 0
+        vcj_mean = np.mean(sv[:, 1]) if sv.shape[1] > 1 else 0
+        pcj_mean = np.mean(sv[:, 2]) if sv.shape[1] > 2 else 0
+        rho_mean = np.mean(sv[:, 3]) if sv.shape[1] > 3 else 0
+
+        file_exists = os.path.exists(shock_vel_csv)
+        with open(shock_vel_csv, "a", newline='') as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["Iteration", "Dv_km/s", "V_CJ", "P_CJ_GPa", "rho_g/cm3", "HOD_kJ/kg"])
+            hod_csv = f"{Q_release:.2f}" if Q_release else "N/A"
+            writer.writerow([f"iter.{self.ii:06d}", f"{dv_mean:.3f}", f"{vcj_mean:.4f}",
+                             f"{pcj_mean:.2f}", f"{rho_mean:.3f}", hod_csv])
+
+        # 保存到 txt 格式（格式化对齐，方便 vi 查看）
+        shock_vel_txt = f"{self.work_dir}/shock_vel.txt"
+        if not os.path.exists(shock_vel_txt):
+            with open(shock_vel_txt, "w") as f:
+                f.write("="*100 + "\n")
+                f.write("Shock Velocity and Detonation Results\n")
+                f.write("="*100 + "\n")
+                f.write(f"{'Iteration':<15} {'Dv(km/s)':<14} {'V_CJ':<14} {'P_CJ(GPa)':<14} {'rho(g/cm3)':<14} {'HOD(kJ/kg)':<14}\n")
+                f.write("-"*100 + "\n")
+
+        with open(shock_vel_txt, "a") as f:
+            hod_str = f"{Q_release:.2f}" if Q_release else "N/A"
+            iter_tag = f"iter.{self.ii:06d}"
+            f.write(f"{iter_tag:<15} {dv_mean:<14.3f} {vcj_mean:<14.4f} {pcj_mean:<14.2f} {rho_mean:<14.3f} {hod_str:<14}\n")
+
+        dlog.info(f"Shock velocity test completed, results: {shock_task.shock_vels} km/s")
+        if Q_release:
+            dlog.info(f"Heat of detonation: {Q_release:.2f} kJ/kg")
 
     def run_nep_train(self):
         '''
@@ -732,8 +777,20 @@ class Nepactive(object):
             dlog.info(f"run_steps is {self.run_steps}, will run shock velocity test")
             self.shock_vel_test()
 
-        if os.path.exists(f"{self.work_dir}/shock_vel.txt"):
-            shock_data = np.loadtxt(f"{self.work_dir}/shock_vel.txt", ndmin=2, encoding="utf-8")
+        shock_vel_csv = f"{self.work_dir}/shock_vel.csv"
+        if os.path.exists(shock_vel_csv):
+            import csv
+            with open(shock_vel_csv, "r") as _f:
+                reader = csv.reader(_f)
+                header = next(reader, None)
+                rows = []
+                for row in reader:
+                    try:
+                        # CSV: Iteration, Dv, V_CJ, P_CJ, rho, HOD
+                        rows.append([float(row[1])])
+                    except (ValueError, IndexError):
+                        continue
+            shock_data = np.array(rows) if rows else np.empty((0, 1))
             if len(shock_data) > 3:
                 shock_values = shock_data[-3:, 0]
                 shock_mean = shock_values.mean()
@@ -785,7 +842,7 @@ class Nepactive(object):
         global_work_dir = os.path.abspath(self.work_dir)
         work_dir = os.path.abspath(os.path.join(self.iter_dir, "00.nep"))
         pot_num = self.idata.get("pot_num", 4)
-        init:bool = self.idata.get("init", True)
+        use_init_data:bool = self.idata.get("use_init_data", True)
 
         os.makedirs(work_dir, exist_ok=True)
         os.chdir(work_dir)
@@ -805,7 +862,7 @@ class Nepactive(object):
         files = []
         testfiles = []
         # 注意每一代有没有划分训练集和测试集
-        if init == True:
+        if use_init_data == True:
             print(f"{os.path.isfile(os.path.join(global_work_dir, 'init/iter_train.xyz'))}")
             # 直接调用 extend 方法，不要尝试将其结果赋值
             files.extend(glob(os.path.join(global_work_dir, "init/iter_train.xyz")))
@@ -930,7 +987,7 @@ class Nepactive(object):
         assert e0 and p0 and v0, "e0, p0, v0 are not empty set"
 
         task_dicts = []
-        ensembles = model_devi.get("ensembles",["nphugo"])
+        ensembles = model_devi.get("ensembles",["nphugo_scr"])
         replicate_cell = model_devi.get("replicate_cell","1 1 1")
         nums = list(map(int, replicate_cell.split()))
         mult_power = np.prod(nums)
@@ -950,16 +1007,16 @@ class Nepactive(object):
             assert all([structure,time_step,run_steps]), "有变量为空"
             # task_dict = {}
             all_dict["pperiod"] = [pperiod]
-            if ensemble in ["nvt", "npt", "nphugo"]:
+            if ensemble in ["nvt", "npt", "nphugo_mttk", "nphugo_scr"]:
                 temperature = model_devi.get("temperature") #
                 if ensemble in ["npt", "nvt"]:
                     assert temperature is not None
                     all_dict["temperature"] = temperature
-                if ensemble in ["npt", "nphugo"]:
+                if ensemble in ["npt", "nphugo_mttk", "nphugo_scr"]:
                     pressure = model_devi.get("pressure") #
                     all_dict["pressure"] = pressure
                     assert pressure is not None
-                if ensemble == "nphugo":
+                if ensemble in ["nphugo_mttk", "nphugo_scr"]:
                     all_dict["e0"] = e0 * mult_power
                     all_dict["p0"] = p0
                     all_dict["v0"] = v0 * mult_power
@@ -999,9 +1056,9 @@ class Nepactive(object):
                 text = nvt_template.format(time_step = time_step,run_steps = run_steps,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
             elif ensemble == "npt":
                 text = npt_template.format(time_step = time_step,run_steps = run_steps,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
-            elif ensemble == "nphugo":
+            elif ensemble in ["nphugo_mttk", "nphugo_scr"]:
                 assert run_steps > 20000
-                text = nphugo_template.format(
+                text = nphugo_mttk_template.format(
                     time_step = time_step,
                     run_steps = run_steps-20000,
                     dump_freq = dump_freq,
@@ -1673,8 +1730,8 @@ class Nepactive(object):
         empty_cache()
 
     def make_vasp_task(self):
-        task = Remotetask(iternum = self.ii, idata = self.idata, trajfile = self.trajfile)
-        task.run_submission(jj=3)
+        task = Remotetask(idata=self.idata, work_dirs=[os.getcwd()])
+        task.run_submission()
 
     def run_label_task(self):
         label_engine = self.idata.get("label_engine","mattersim")
@@ -1685,10 +1742,9 @@ class Nepactive(object):
 
     def run_vasp_task(self):
         assert os.path.isabs(self.iter_dir)
-        os.chdir(f"{self.iter_dir}/02.label")
-        if task is None:
-            task = Remotetask(idata = self.idata)
-        task.run_submission(jj=4)
+        label_dir = f"{self.iter_dir}/02.label"
+        os.chdir(label_dir)
+        Remotetask(idata=self.idata, work_dirs=[label_dir]).run_submission()
 
     def write_steps(self):
         with open(f"{self.work_dir}/steps.txt","a") as f:

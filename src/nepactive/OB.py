@@ -16,7 +16,7 @@ from mattersim.forcefield import MatterSimCalculator
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.md.nvtberendsen import NVTBerendsen
 from ase.build import make_supercell
-from nepactive.template import nvt_pytemplate,nphugo_pytemplate,nphugo_template,shock_test_template
+from nepactive.template import nvt_pytemplate,nphugo_mttk_pytemplate,nphugo_mttk_template,shock_test_template
 from nepactive.plt import ase_plt,gpumdplt
 from nepactive.tools import shock_calculate,run_gpumd_task,compute_volume_from_thermo
 from ase.io.extxyz import write_extxyz

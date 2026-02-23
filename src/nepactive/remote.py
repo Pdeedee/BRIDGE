@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #ase 读取 traj文件，在当前目录下创建名为task.{number}的文件夹，保存每一帧到其中
 from ase.io import read,write
 import shlex
@@ -12,6 +13,7 @@ import tarfile
 import time
 import socket
 from glob import glob
+import warnings
 
 import pathlib
 import uuid
@@ -20,32 +22,63 @@ from enum import IntEnum
 from hashlib import sha1
 import random
 import numpy as np
-# from dpdispatcher.contexts.ssh_context import SSHSession
 
-def traj2tasks(traj_file:str,incar_file:str,frames:int=0, kpoint_file:str=None):
+from pymatgen.io.vasp.sets import MPStaticSet
+from pymatgen.io.ase import AseAtomsAdaptor
+from pymatgen.core import Structure
+
+def traj2tasks(traj_file: str, incar_settings: dict = None, frames: int = 0,
+               output_dir: str = None, start_index: int = 0) -> int:
     """
-    需要在当前文件夹下准备好candidate.traj文件与INCAR，POTCAR文件,然后执行nepactive --remote
+    读取轨迹文件，为每一帧生成完整的 VASP 输入（POSCAR + INCAR + POTCAR）。
+    使用 pymatgen MPStaticSet 自动生成，通过 incar_settings 覆盖参数。
+    默认关闭自旋 (ISPIN=1)。
+
+    Parameters
+    ----------
+    output_dir : str, optional
+        task 文件夹的输出目录，默认为 traj_file 所在目录。
+    start_index : int
+        task 编号起始值，用于同目录多文件时避免编号冲突。
+
+    Returns
+    -------
+    int
+        本次生成的 task 数量。
     """
+    if output_dir is None:
+        output_dir = os.path.dirname(os.path.abspath(traj_file)) or "."
+    os.makedirs(output_dir, exist_ok=True)
+
     traj = read(traj_file, index=':')
     if frames == 0:
         frames = len(traj)
-    index = random.sample(range(len(traj)),frames)
+    index = random.sample(range(len(traj)), frames)
     index.sort()
-    index = np.array(index,dtype="int32")
+    index = np.array(index, dtype="int32")
     sorted_traj = [traj[i] for i in index]
-    np.savetxt("index.txt", index)
+    np.savetxt(os.path.join(output_dir, "index.txt"), index)
+
+    # 默认关自旋
+    settings = {"ISPIN": 1}
+    if incar_settings:
+        settings.update(incar_settings)
+
     for i, frame in enumerate(sorted_traj):
-        folder_name = f'task.{i:06d}'
+        folder_name = os.path.join(output_dir, f'task.{start_index + i:06d}')
         os.makedirs(folder_name, exist_ok=True)
-        write(f'{folder_name}/POSCAR', frame, format='vasp')
-        if kpoint_file:
-            shutil.copyfile(kpoint_file,f"{folder_name}/KPOINTS")
-        os.chdir(folder_name)
-        os.system(f"echo 103|vaspkit")
-        os.chdir("..")
-        shutil.copyfile(incar_file,f"{folder_name}/INCAR")
-        # shutil.copyfile(potcar_file,f"{folder_name}/POTCAR")
-        #写好POTCAR和KPOINTS
+        # 全部由pymatgen生成，保证POSCAR/POTCAR元素顺序一致
+        struct = AseAtomsAdaptor.get_structure(frame)
+        # pymatgen按元素排序，同种元素聚在一起
+        struct = struct.get_sorted_structure()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            vis = MPStaticSet(struct, user_incar_settings=settings)
+            vis.incar.write_file(os.path.join(folder_name, "INCAR"))
+            vis.poscar.write_file(os.path.join(folder_name, "POSCAR"))
+            vis.potcar.write_file(os.path.join(folder_name, "POTCAR"))
+        dlog.info(f"prepared {folder_name}")
+    return len(sorted_traj)
 
 class JobStatus(IntEnum):
     unsubmitted = 1
@@ -64,50 +97,23 @@ def rsync(
         key_filename: Optional[str] = None,
         timeout: Union[int, float] = 10,
     ):
-        """Call rsync to transfer files.
-
-        Parameters
-        ----------
-        from_file : str
-            SRC
-        to_file : str
-            DEST
-        port : int, default=22
-            port for ssh
-        key_filename : str, optional
-            identity file name
-        timeout : int, default=10
-            timeout for ssh
-
-        Raises
-        ------
-        RuntimeError
-            when return code is not 0
-        """
+        """Call rsync to transfer files."""
         ssh_cmd = [
             "ssh",
-            "-o",
-            "ConnectTimeout=" + str(timeout),
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "StrictHostKeyChecking=no",
-            "-p",
-            str(port),
+            "-o", "ConnectTimeout=" + str(timeout),
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-p", str(port),
             "-q",
         ]
         if key_filename is not None:
             ssh_cmd.extend(["-i", key_filename])
         cmd = [
-            "rsync",
-            # -a: archieve
-            # -z: compress
-            "-az",
-            "-e",
-            " ".join(ssh_cmd),
+            "rsync", "-az",
+            "-e", " ".join(ssh_cmd),
             "-q",
             from_file,
-            to_file
+            to_file,
         ]
         if additional_args:
             cmd.extend(additional_args)
@@ -131,32 +137,9 @@ def retry(
     sleep: Union[int, float] = 60,
     catch_exception: Type[BaseException] = RetrySignal,
 ) -> Callable:
-    """Retry the function until it succeeds or fails for certain times.
-
-    Parameters
-    ----------
-    max_retry : int, default=3
-        The maximum retry times. If None, it will retry forever.
-    sleep : int or float, default=60
-        The sleep time in seconds.
-    catch_exception : Exception, default=Exception
-        The exception to catch.
-
-    Returns
-    -------
-    decorator: Callable
-        The decorator.
-
-    Examples
-    --------
-    >>> @retry(max_retry=3, sleep=60, catch_exception=RetrySignal)
-    ... def func():
-    ...     raise RetrySignal("Failed")
-    """
-
+    """Retry the function until it succeeds or fails for certain times."""
     def decorator(func):
         assert max_retry > 0, "max_retry must be greater than 0"
-
         def wrapper(*args, **kwargs):
             current_retry = 0
             errors = []
@@ -166,638 +149,93 @@ def retry(
                 except (catch_exception,) as e:
                     errors.append(e)
                     dlog.exception("Failed to run %s: %s", func.__name__, e)
-                    # sleep certain seconds
                     dlog.warning("Sleep %s s and retry...", sleep)
                     time.sleep(sleep)
                     current_retry += 1
             else:
-                # raise all exceptions
                 raise RuntimeError(
                     "Failed to run %s for %d times" % (func.__name__, current_retry)
                 ) from errors[-1]
         return wrapper
     return decorator
 
-class Job:
-    def __init__(self, idata:dict, group_tag:str, json_filepath, remote_subfilepath, task_list, stderr, status = JobStatus.unsubmitted, job_id = ""):
-        """
-        job_status: str, 'unsubmitted', 'submitted', 'finished', 'failed'
-        stder, stdout : the error and output path of the job, not remote
-        """
-        self.idata = idata
-        self.json_filepath = json_filepath
-        self.remote_subfilepath = remote_subfilepath
-        self.job_id = job_id
-        self.task_list = task_list
-        self.stderr = stderr
-        self.status = status
-        self.group_tag = group_tag
-        self.fail_count = 0
-        # self.serialize()
-        # self.hash = self.get_hash()
-        
-        # self.stdout = stdout
-
-    def get_hash(self):
-        job_hash = sha1(json.dumps(self.cur_job).encode("utf-8")).hexdigest()
-        # print(f"hash: {job_hash}")
-        return job_hash
-
-    def serialize(self):
-        self.cur_job = {
-            'idata': self.idata,
-            'json_filepath': self.json_filepath,
-            'remote_subfilepath': self.remote_subfilepath,
-            'task_list': self.task_list,
-            'job_id': self.job_id,
-            # 'job_status': self.job_status,
-            'stderr': self.stderr,
-            'group_tag':self.group_tag
-            # 'stdout': self.stdout,
-        }
-        # json.dump(cur_job, open(self.filepath, 'w')
-
-    def dump(self,filename):
-        self.serialize()
-        with open(filename, 'w') as f:
-            json.dump(self.cur_job, f)
-            dlog.info(f"dump job to {filename}, job_id: {self.job_id}")
-
-    @classmethod
-    def deserialize(cls, json_file):
-        with open(json_file,'r') as f:
-            cur_job = json.load(f)
-        return cls(idata=cur_job['idata'], group_tag=cur_job['group_tag'], json_filepath=cur_job['json_filepath'],remote_subfilepath=cur_job['remote_subfilepath'] , task_list=cur_job['task_list'], stderr = cur_job['stderr'], job_id = cur_job['job_id'])
-
-    def set_job_id(self, job_id):
-        self.job_id = job_id
-    
-    def set_job_status(self, status):
-        self.status = status
-    
-
-command_script_template = """
-
-cd {remote_root}
-cd {task_work_path}
-test $? -ne 0 && exit 1
-if [ ! -f job_finished ] ;then
-  {command} {log_err_part}
-  if test $? -eq 0; then touch job_finished; else echo {task_work_path} >> ../failed_tasks;tail -v -c 1000 {err_file} > {last_err_file};fi
-fi 
-
-"""
-
-end_script_template = """
-cd {remote_root}
-touch {group_tag}_job_tag_finished
-"""
-
+# ---------------------------------------------------------------------------
+#  Remotetask — 每个 task 独立上传 / 提交 / 回传
+# ---------------------------------------------------------------------------
 class Remotetask:
-    def __init__(self,idata:dict):
-        self.idata:dict = idata
-        self.work_dir = os.getcwd()
-        tar_suffix = idata.get('tar_suffix')
-        self.project_name = idata.get('project_name')
-        if tar_suffix is not None:
-            self.tar_fileprefix = f"{self.project_name}_{tar_suffix}"
-        else:
-            self.tar_fileprefix = f"{self.project_name}"
-        self.tar_filename = f"{self.tar_fileprefix}.tar.gz"
-        self.recover:bool = idata.get('recover')
+    """每个 task 独立上传、独立 sbatch 提交、完成后立即回传。
+    重新运行时自动跳过本地已有 task_finished 标记的 task。
+    上传与提交合并在同一循环中，先提交的 task 在后续 task 上传期间即可开始排队/运行。
+    """
 
-        # self.iter_num:int = iter_num
-        self.ssh:paramiko.SSHClient = None
-        # self.traj_filename = traj_filename
-        self.look_for_keys = True
-        self.key_filename = None
-        self.username = idata.get('ssh_username')
-        self.hostname = idata.get('ssh_hostname')
-        self.remotename = f"{self.username}@{self.hostname}"
-        self.port = idata.get('ssh_port')
-        self.password = idata.get('ssh_password', None)
-
-        self.remote_root = idata.get('remote_root')
-        self.timeout = 10
-        self.passphrase = None
-        self.jobs:List[Job] = []
-        self._setup_connection = False
-        self.execute_command = idata.get('ssh_execute_command')
-        self.totp_secret=None
-        self.subfiles:list = []
-        
-        self._sftp = None
-        
-        self._setup_ssh()
-
-        self.sftp = self.get_sftp()
-    
-    def glob_files(self,name="*"):
-        path = os.path.join(self.work_dir, name)
-        return glob(path)
-
-    def setup(self):
-        if not os.path.exists("task.000000"):
-            traj_file = self.idata.get('remotetask_traj_file',"candidate.traj")
-            incar_file = self.idata.get('incar_file',"INCAR")
-            potcar_file = self.idata.get('potcar_file',"POTCAR")
-            frames = self.idata.get('remotetask_frames',0)
-            dlog.info(f"find traj_file:{traj_file}, incar_file:{incar_file}, potcar_file:{potcar_file}, frames:{frames}")
-            # assert frames
-            traj2tasks(traj_file=traj_file, incar_file=incar_file, frames=frames)
-        self.fs = self.glob_files()
-        self.tasks = self.glob_files("task.*")
-        self.tasks = [os.path.basename(task) for task in self.tasks]
-
-    def run_submission(self):
-        # 创建SSH对象
-        os.chdir(self.work_dir)
-        # self.task_prepared = self.idata.get('task_prepared', False)
-        self.setup()
-        files = os.listdir(self.work_dir)
-        cur_files = [file for file in files if file.startswith('cur_job')]
-        jj = 3
-        if cur_files:
-            dlog.info(f"找到以下 'cur' 开头的文件:{cur_files}")
-            jj =4
-            self.jobs = [Job.deserialize(file) for file in cur_files]
-        
-        if os.path.exists("finished"):
-            dlog.info("already finished")
-            return
-
-        if jj == 3:
-            self.make_jobs()
-            dlog.info("Tasks created")
-            self.fs = self.glob_files()
-            self.put_files()
-            dlog.info("Files uploaded")
-            jj = 4
-        if jj == 4:
-            dlog.info("Start to check status")
-            for i,job in enumerate(self.jobs):
-                job.status = self.check_status(job)
-            finished = self.check_finished()
-            while not finished:
-                for i,job in enumerate(self.jobs):
-                    job.status = self.check_status(job)
-                    self.handle_job_status(job)
-                # self.handle_job_status()
-                finished = self.check_finished()
-            # dlog.info("Jobs submitted")
-            self.get_files()
-            dlog.info("Files downloaded")
-            os.chdir(self.work_dir)
-            os.system("touch finished")
-            clean = self.idata.get('clean', True)
-            
-            if clean:
-                # self.sftp.rmdir(f"{self.remote_root}/{self.tar_fileprefix}")
-                self.block_checkcall(f"rm -rf {self.remote_root}/{self.tar_fileprefix}")
-                dlog.info(f"Clean remote files {self.remote_root}/{self.tar_fileprefix}")
-        else:
-            raise ValueError("jj must be 3 or 4")
-        
-    def check_finished(self):
-        statuses = [job.status for job in self.jobs]
-        if all(status == JobStatus.finished for status in statuses):
-            return True
-        else:
-            return False
-        
-    def handle_job_status(self,job:Job):
-        job_state = job.status
-        # self.fail_count = 0
-        if job_state == JobStatus.unknown:
-            raise RuntimeError(f"job_state for job {self} is unknown")
-
-        if job_state == JobStatus.terminated:
-            # job.fail_count += 1
-            dlog.info(
-                f"job: {job.remote_subfilepath} {job.job_id} terminated; "
-                f"fail_count is {job.fail_count}; resubmitting job"
-            )
-            retry_count = 3
-            if (job.fail_count) > 0 and (job.fail_count % retry_count == 0):
-                last_error_message = self.get_last_error_message(job)
-                err_msg = (
-                    f"job:{job.remote_subfilepath} {job.job_id} failed {job.fail_count} times."
-                )
-                if last_error_message is not None:
-                    err_msg += f"\nPossible remote error message: {last_error_message}"
-                raise RuntimeError(err_msg)
-            self.submit_job(job)
-            if job.status != JobStatus.unsubmitted:
-                dlog.info(
-                    f"job:{job.remote_subfilepath} re-submit after terminated; new job_id is {job.job_id}"
-                )
-                time.sleep(0.2)
-                job.status=self.check_status(job)
-                dlog.info(
-                    f"job:{job.remote_subfilepath} job_id:{job.job_id} after re-submitting; the state now is {repr(job.status)}"
-                )
-
-        if job_state == JobStatus.unsubmitted:
-            dlog.debug(f"job: {job.group_tag} unsubmitted; submit it")
-            # if self.fail_count > 3:
-            #     raise RuntimeError("job:job {job} failed 3 times".format(job=self))
-            self.submit_job(job=job)
-            if job.status != JobStatus.unsubmitted:
-                dlog.info(f"job: {job.remote_subfilepath} submit; job_id is {job.job_id}")
-
-    def read_remote_file(self, fname:str):
-        assert self.remote_root is not None
-        self.ensure_alive()
-        with self.sftp.open(
-            pathlib.PurePath(os.path.join(self.remote_root, fname)).as_posix(),
-            "r",
-        ) as fp:
-            ret = fp.read().decode("utf-8")
-        return ret
-
-    def get_last_error_message(self,job:Job) -> Optional[str]:
-        """Get last error message when the job is terminated."""
-        # assert self.machine is not None
-        last_err_file = job.stderr
-        if self.check_file_exists(last_err_file):
-            last_error_message = self.read_remote_file(last_err_file)
-            # red color
-            last_error_message = "\033[31m" + last_error_message + "\033[0m"
-            return last_error_message
-
-    def check_file_exists(self, fname:str) -> bool:
-        assert self.remote_root is not None
-        self.ensure_alive()
-        try:
-            self.sftp.stat(
-                pathlib.PurePath(os.path.join(f"{self.remote_root}/{self.tar_fileprefix}", fname)).as_posix()
-            )
-            ret = True
-        except OSError:
-            ret = False
-        return ret
-
-    def block_call(self, cmd):
-        assert self.remote_root is not None
-        self.ensure_alive()
-        stdin, stdout, stderr = self.ssh.exec_command(
-            (f"cd {shlex.quote(self.remote_root)} ;") + cmd
-        )
-        exit_status = stdout.channel.recv_exit_status()
-        return exit_status, stdin, stdout, stderr
-    
-    def block_checkcall(self, cmd, asynchronously=False) -> Tuple[Any, Any, Any]:
-        """Run command with arguments. Wait for command to complete.
-
+    def __init__(self, idata: dict, work_dirs: Optional[List[str]] = None):
+        """
         Parameters
         ----------
-        cmd : str
-            The command to run.
-        asynchronously : bool, optional, default=False
-            Run command asynchronously. If True, `nohup` will be used to run the command.
-
-        Returns
-        -------
-        stdin
-            standard inout
-        stdout
-            standard output
-        stderr
-            standard error
-
-        Raises
-        ------
-        RuntimeError
-            when the return code is not zero
+        idata : dict
+            从 in.yaml 解析出的完整配置。remote 相关配置从 idata['remote'] 子段落读取。
+        work_dirs : list[str], optional
+            要扫描 task.* 的本地目录列表。不传时从 idata['remote']['dirs'] 读取，默认 ["."]。
         """
-        if asynchronously:
-            cmd = f"nohup {cmd} >/dev/null &"
-        exit_status, stdin, stdout, stderr = self.block_call(cmd)
-        if exit_status != 0:
-            raise RuntimeError(
-                "Get error code %d in calling %s. message: %s"
-                % (
-                    exit_status,
-                    cmd,
-                    stderr.read().decode("utf-8"),
-                )
-            )
-        return stdin, stdout, stderr
-    
-    def put_files(self):
-        self.tar_files()
-        try:
-            self.sftp.mkdir(f"{self.remote_root}/{self.tar_fileprefix}")
-        except OSError:
-            pass
+        self.idata: dict = idata
+        rc: dict = idata.get('remote', {})
+        self.rc = rc
 
-        self.rsync(from_f = self.tar_filename, to_f = f"{self.idata.get('remote_root')}/{self.tar_fileprefix}")
-
-        self.block_checkcall(f"cd {self.remote_root}/{self.tar_fileprefix} &&tar -xzf {self.tar_filename}")
-
-        os.remove(self.tar_filename)
-
-    def check_status(self, job:Job):
-        job_id = job.job_id
-        dlog.debug(f"checking job: {job_id}")
-        # raise NotImplementedError
-        if job_id == "":
-            return JobStatus.unsubmitted
-        command = 'squeue -h -o "%.18i %.2t" -j ' + job_id
-        # print(job_id)
-        ret, stdin, stdout, stderr = self.block_call(command)
-        # print(f"stderr: {stderr.read().decode('utf-8')},stdout:{stdout.read().decode('utf-8')}")
-        #只能read一次
-        dlog.debug(f"ret: {ret}")
-        # print(f"ret: {ret}")
-        if ret != 0:
-            err_str = stderr.read().decode("utf-8")
-            print(f"err_str: {err_str}")
-            if "Invalid job id specified" in err_str:
-                if self.check_finish_tag(job):
-                    dlog.info(f"job: {job.group_tag} {job.job_id} finished")
-                    return JobStatus.finished
-                else:
-                    return JobStatus.terminated
-            elif (
-                "Socket timed out on send/recv operation" in err_str
-                or "Unable to contact slurm controller" in err_str
-            ):
-                # retry 3 times
-                raise RetrySignal(
-                    "Get error code %d in checking status with job: %s . message: %s"
-                    % (ret, job.group_tag, err_str)
-                )
-            raise RuntimeError(
-                "status command (%s) fails to execute.\n"
-                "job_id:%s \n error message:%s\n return code %d\n"
-                % (command, job_id, err_str, ret)
-            )
-        status_lines = stdout.read().decode("utf-8").split("\n")[:-1]
-        status = []
-        for status_line in status_lines:
-            status_word = status_line.split()[-1]
-            if not (len(status_line.split()) == 2 and status_word.isupper()):
-                raise RuntimeError(
-                    "Error in getting job status, "
-                    + f"status_line = {status_line}, "
-                    + f"parsed status_word = {status_word}"
-                )
-            if status_word in ["PD", "CF", "S"]:
-                status.append(JobStatus.waiting)
-            elif status_word in ["R"]:
-                status.append(JobStatus.running)
-            elif status_word in ["CG"]:
-                status.append(JobStatus.completing)
-            elif status_word in [
-                "C",
-                "E",
-                "K",
-                "BF",
-                "CA",
-                "CD",
-                "F",
-                "NF",
-                "PR",
-                "SE",
-                "ST",
-                "TO",
-            ]:
-                status.append(JobStatus.finished)
-            else:
-                status.append(JobStatus.unknown)
-        # running if any job is running
-        if JobStatus.running in status:
-            return JobStatus.running
-        elif JobStatus.waiting in status:
-            return JobStatus.waiting
-        elif JobStatus.completing in status:
-            return JobStatus.completing
-        elif JobStatus.unknown in status:
-            return JobStatus.unknown
+        if work_dirs is not None:
+            self.work_dirs = [os.path.abspath(d) for d in work_dirs]
         else:
-            if self.check_finish_tag(job):
-                dlog.info(f"job: {job.group_tag} {job.job_id} finished")
-                return JobStatus.finished
-            else:
-                return JobStatus.terminated
-    
-    def check_finish_tag(self, job:Job):
-        job_tag_finished = f"{job.group_tag}_job_tag_finished"  # 假设这是文件路径
-        print(f"job_tag_finished: {job_tag_finished}")
-        if self.check_file_exists(job_tag_finished):
-            return True
-        else:
-            return False
-        
+            raw_dirs = rc.get('dirs', ["."])
+            self.work_dirs = [os.path.abspath(d) for d in raw_dirs]
 
-    @retry(max_retry=3, sleep=60, catch_exception=RetrySignal)
-    def submit_job(self,job:Job):
-        # command = f"cd {self.remote_root} && sbatch {shlex.quote(job.remote_subfilepath)}"
-        # self.block_checkcall(command)
+        self.project_name = idata.get('project_name')
+        self.username = rc.get('ssh_username')
+        self.hostname = rc.get('ssh_hostname')
+        self.remotename = f"{self.username}@{self.hostname}"
+        self.port = rc.get('ssh_port', 22)
+        self.remote_root = rc.get('remote_root')
+        self.key_filename = None
+        self.ssh: paramiko.SSHClient = None
+        self._sftp = None
+        self._setup_connection = False
+        self.execute_command = rc.get('ssh_execute_command')
 
-        job.fail_count += 1
-        print(f"group_tag: {job.group_tag}")
-        command = "cd {} && {} {}".format(
-        shlex.quote(f"{self.remote_root}/{self.tar_fileprefix}"),
-        "sbatch",
-        shlex.quote(f"{job.group_tag}.sub"),
-        )
-        ret, stdin, stdout, stderr = self.block_call(command)
-        if ret != 0:
-            err_str = stderr.read().decode("utf-8")
-            if (
-                "Socket timed out on send/recv operation" in err_str
-                or "Unable to contact slurm controller" in err_str
-            ):
-                # server network error, retry 3 times
-                raise RetrySignal(
-                    "Get error code %d in submitting with job: %s . message: %s"
-                    % (ret, job.group_tag, err_str)
-                )
-            elif (
-                "Job violates accounting/QOS policy" in err_str
-                # the number of jobs exceeds DEFAULT_MAX_JOB_COUNT (by default 10000)
-                or "Slurm temporarily unable to accept job, sleeping and retrying"
-                in err_str
-            ):
-                # job number exceeds, skip the submitting
-                return ""
-            raise RuntimeError(
-                "command %s fails to execute\nerror message:%s\nreturn code %d\n"
-                % (command, err_str, ret)
-            )
-        subret:str = stdout.readlines()
-        # print(f"subret:{subret}")
-        job_id = subret[0].split(" ")[-1].strip()
-        # print(f"job_id:{job_id}")
-        # exit()
-        dlog.info(f"job:{job.group_tag} submitted as :{job_id}")
-        job.set_job_id(job_id)
-        job.status = self.check_status(job)
-        job.dump(f"{self.work_dir}/cur_job_{job.group_tag}.json")
-        
-    def get_files(self):
-        # self.remote_tar_files()
-        dlog.info(f"beginning to rsync files in {self.work_dir}")
-        #/号很重要
-        additional_args = ["--exclude=*.tar.gz", "--exclude=*log", "--exclude=*out","--exclude=*/*.xml", "--exclude=*/POTCAR","--exclude=*/XDATCAR"]
-        self.rsync(from_f = f"{self.remote_root}/{self.tar_fileprefix}/", to_f = self.work_dir, send = False, additional_args=additional_args)
-        dlog.info(f"rsync files in {self.work_dir} successfully")
-        # with tarfile.open(self.tar_filename, mode='r:gz') as tar:
-            # tar.extractall(path=self.work_dir)
+        self._setup_ssh()
+        self.sftp = self.get_sftp()
 
-    def remote_tar_files(self):
+    # ---- property ----------------------------------------------------------
 
-        # ntar = len(self.fs)
-        tar_command = "czfh"
-        of = self.tar_filename
-        dir = f"{self.remote_root}/{self.tar_fileprefix}"
-        # file_list = " ".join([shlex.quote(file) for file in self.fs])
-        # 包含主文件夹
-        # tar_cmd = f"cd {self.remote_root} && tar {tar_command} {shlex.quote(of)} {self.tar_fileprefix}"
-        # self.block_checkcall(tar_cmd)
-        dlog.info(f"beginning to tar files in {dir}")
-        per_nfile = 100
-        ntar = len(self.fs) // per_nfile + 1
-        # if ntar <= 1:
-        #     file_list = " ".join([shlex.quote(os.path.basename(file)) for file in self.tasks])
-        #     tar_cmd = f"cd {dir} && tar {tar_command} {shlex.quote(of)} {file_list}"
-        # else:
-        #     file_list_file = pathlib.PurePath(
-        #         os.path.join(f"{self.remote_root}/{self.tar_fileprefix}", f".tmp_tar_{uuid.uuid4()}")
-        #     ).as_posix()
-        #     self.write_file(file_list_file, "\n".join(self.tasks))
-        #     tar_cmd = (
-        #         f"cd {dir} &&tar {tar_command} {shlex.quote(of)} -T {shlex.quote(os.path.basename(file_list_file))}"
-        #     )
-        tar_cmd = f"cd {dir} && tar {tar_command} {shlex.quote(of)} *"
-        try:
-            self.block_checkcall(tar_cmd)
-        except RuntimeError as e:
-            if "No such file or directory" in str(e):
-                raise FileNotFoundError(
-                    f"Backward files do not exist in the remote directory in executing command {tar_cmd}"
-                ) from e
-            raise e
-        
-        self.block_checkcall(f"rm -r {self.remote_root}/{self.tar_fileprefix}")
+    @property
+    def remote_dir(self):
+        """远程项目目录: {remote_root}/{project_name}"""
+        return f"{self.remote_root}/{self.project_name}"
 
-    def write_file(self, fname, write_str):
-        assert self.remote_root is not None
-        self.ensure_alive()
-        dlog.info(f"tar_file_prefix: {self.tar_fileprefix}")
-        fname = pathlib.PurePath(fname).as_posix()
-        # to prevent old file from being overwritten but cancelled, create a temporary file first
-        # when it is fully written, rename it to the original file name
-        temp_fname = fname + "_tmp"
-        try:
-            with self.sftp.open(temp_fname, "w") as fp:
-                fp.write(write_str)
-            # Rename the temporary file
-            self.block_checkcall(f"mv {shlex.quote(temp_fname)} {shlex.quote(fname)}")
-            dlog.info(f"Successfully wrote to file {fname}")
-        # sftp.rename may throw OSError
-        except OSError as e:
-            dlog.exception(f"Error writing to file {fname}")
-            raise e
-
-    def rsync(self, from_f, to_f, send=True, additional_args=None):
-        # from_f = None
-        # to_f = None
-        # ssh = paramiko.SSHClient()
-        try:
-            if self.sftp is None:
-                raise RuntimeError("SFTP connection is not established.")
-            self.sftp.mkdir(f"{self.remote_root}/{self.tar_fileprefix}")
-        except OSError:
-                pass
-        # os.chdir(self.remote_root)
-        key_filename = self.key_filename
-        # ssh.connect(hostname = self.hostname, port = self.port, username = self.username, password = self.password)
-        timeout = self.idata.get('ssh_timeout')
-
-        assert os.path.abspath(to_f)
-        
-        ####注意是否按照顺序来传输文件
-        if send is True:
-            to_f = self.remotename + ":" + to_f
-        else:
-            from_f = self.remotename + ":" + from_f
-
-        rsync(
-                    from_f,
-                    to_f,
-                    port=self.port,
-                    key_filename=key_filename,
-                    timeout=timeout,
-                    additional_args=additional_args
-                )
-
-    def tar_files(self):
-        of = self.tar_filename
-        tarfile_mode = "w:gz"
-        dereference=True
-        directories=None
-        kwargs = {"compresslevel": 6}
-        files = self.fs
-        # print(f"tar files {files} to {of}")
-        if os.path.isfile(os.path.join(self.work_dir, of)):
-            os.remove(os.path.join(self.work_dir, of))
-        with tarfile.open(
-            os.path.join(self.work_dir, of),
-            tarfile_mode,
-            **kwargs,
-        ) as tar:
-            # avoid compressing duplicated files or directories
-            for ii_full in set(files):
-                ii = os.path.basename(ii_full)
-                # print(f"adding {ii_full} as {ii}")
-                tar.add(ii_full, arcname=ii)
-            if directories is not None:
-                for ii_full in set(directories):
-                    ii = os.path.basename(ii_full)
-                    tar.add(ii_full, arcname=ii, recursive=False)
-            # self.ensure_alive()
-        dlog.info(f"tar file {of} created")
+    # ---- SSH 基础 ----------------------------------------------------------
 
     def _setup_ssh(self):
-        # machine = self.machine
         self.ssh = paramiko.SSHClient()
         self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy)
-        self.key_filename = self.idata.get('ssh_key_filename')
-        hostname = self.idata.get('ssh_hostname')
-        port = self.idata.get('ssh_port')
-        username = self.idata.get('ssh_username')
-        print(f"hostname: {hostname}, port: {port}, username: {username}")
+        self.key_filename = self.rc.get('ssh_key_filename')
+        hostname = self.rc.get('ssh_hostname')
+        port = self.rc.get('ssh_port', 22)
+        username = self.rc.get('ssh_username')
+        dlog.info(f"connecting to {hostname}:{port} as {username}")
         self.ssh.connect(
-                    hostname=hostname,
-                    port=port,
-                    username=username,
-                    # password=password,
-                    # key_filename = key_filename,
-                    timeout=30,
-                    compress=True,
-                    allow_agent=False, 
-                    look_for_keys=True
-                )
+            hostname=hostname, port=port, username=username,
+            timeout=30, compress=True,
+            allow_agent=False, look_for_keys=True,
+        )
         dlog.info("ssh connection established")
-        command = f"""
-                REMOTE_ROOT = {self.remote_root}
-                cd $REMOTE_ROOT
-                    """
-        self.ssh.exec_command(command)
         if self.execute_command is not None:
             self.ssh.exec_command(self.execute_command)
-        self._setup_connection == True
+        self._setup_connection = True
 
     def get_sftp(self):
         if self._sftp is None:
             assert self.ssh is not None
             self.ensure_alive()
             self._sftp = self.ssh.open_sftp()
-        return self._sftp      #在内层不会导致无返回报错吗
-        
+        return self._sftp
+
     def ensure_alive(self, max_check=10, sleep_time=10):
         count = 1
         while not self._check_alive():
@@ -822,43 +260,285 @@ class Remotetask:
         except EOFError:
             return False
 
-    def make_jobs(self):
-        groups = self.group_tasks()
-        for i,group in enumerate(groups):
-            # print(f"grouptype:{type(group)}")
-            assert isinstance(group,list)
-            header_script:list = self.idata.get('slurm_header_script')
-            header_script = "\n".join(header_script)
-            cycle_run_script = ""
-            for ii,task_work_path in enumerate(group):
-                log_err_part = f"1>>fp.log 2>>fp.log"
-                cycle_run_script += command_script_template.format(
-                                                                    remote_root = f"{self.remote_root}/{self.tar_fileprefix}",
-                                                                    task_work_path = task_work_path,
-                                                                    log_err_part = log_err_part,
-                                                                    err_file = 'fp.log',
-                                                                    last_err_file = f'group_{i:03d}_last_err',
-                                                                    command = self.idata.get('fp_command')
-                                                                )
-            subfile = f"group_{i:03d}.sub"
-            self.subfiles.extend(subfile)
-            end_script = end_script_template.format(remote_root = f"{self.remote_root}/{self.tar_fileprefix}",
-                                                    group_tag = f"group_{i:03d}")
-            total_script = "\n".join([header_script, cycle_run_script, end_script])
-            header_script + cycle_run_script
-            json_filepath = f"{self.work_dir}/cur_job_{ii}.json.json"
-            remote_subfilepath = f"{self.remote_root}/{self.tar_fileprefix}/{subfile}"
-            stderr = f'{self.remote_root}/{self.tar_fileprefix}/group_{i:03d}_last_err'
-            job = Job(idata = self.idata, json_filepath = json_filepath,stderr = stderr,
-                       remote_subfilepath = remote_subfilepath, task_list = groups[i], group_tag = f"group_{i:03d}")
-            self.jobs.append(job)
-            with open(subfile, 'w') as f:
-                f.write(total_script)
-                
-    def group_tasks(self):
-        group_numbers = self.idata.get('group_numbers',4)
-        dlog.info(f"will split tasks into {group_numbers} groups")
-        task_numbers = len(self.tasks)
-        group_size = math.ceil(task_numbers/ group_numbers)
-        groups = [self.tasks[i:i+group_size] for i in range(0, task_numbers, group_size)]
-        return groups
+    def block_call(self, cmd):
+        assert self.remote_root is not None
+        self.ensure_alive()
+        stdin, stdout, stderr = self.ssh.exec_command(
+            f"cd {shlex.quote(self.remote_root)} ; " + cmd
+        )
+        exit_status = stdout.channel.recv_exit_status()
+        return exit_status, stdin, stdout, stderr
+
+    def block_checkcall(self, cmd, asynchronously=False):
+        if asynchronously:
+            cmd = f"nohup {cmd} >/dev/null &"
+        exit_status, stdin, stdout, stderr = self.block_call(cmd)
+        if exit_status != 0:
+            raise RuntimeError(
+                "Get error code %d in calling %s. message: %s"
+                % (exit_status, cmd, stderr.read().decode("utf-8"))
+            )
+        return stdin, stdout, stderr
+
+    def _rsync(self, from_f, to_f, send=True, additional_args=None):
+        """简化的 rsync 封装，不再自动 mkdir。"""
+        key_filename = self.key_filename
+        timeout = self.rc.get('ssh_timeout', 10)
+        if send:
+            to_f = self.remotename + ":" + to_f
+        else:
+            from_f = self.remotename + ":" + from_f
+        rsync(from_f, to_f, port=self.port,
+              key_filename=key_filename, timeout=timeout,
+              additional_args=additional_args)
+
+    def _reload_config(self):
+        """重新读取 in.yaml，刷新 remote 配置（group_numbers 等）。"""
+        from nepactive import parse_yaml
+        self.idata = parse_yaml("in.yaml")
+        self.rc = self.idata.get('remote', {})
+
+    def _scan_dir(self, work_dir: str) -> List[str]:
+        """扫描单个目录下的 pending task（跳过 task_finished / task_failed）。"""
+        all_tasks = sorted(glob(os.path.join(work_dir, "task.*")))
+        all_tasks = [os.path.basename(t) for t in all_tasks]
+        pending = []
+        n_finished = n_failed = 0
+        for t in all_tasks:
+            task_dir = os.path.join(work_dir, t)
+            if os.path.exists(os.path.join(task_dir, "task_finished")):
+                n_finished += 1
+            elif os.path.exists(os.path.join(task_dir, "task_failed")):
+                n_failed += 1
+            else:
+                pending.append(t)
+        dlog.info(
+            f"[{os.path.basename(work_dir)}] total: {len(all_tasks)}, "
+            f"finished: {n_finished}, failed: {n_failed}, pending: {len(pending)}"
+        )
+        return pending
+
+    # ---- task 准备 ----------------------------------------------------------
+
+    def setup(self):
+        """扫描 work_dirs 下所有 task.* 文件夹，跳过已有 task_finished 或 task_failed 的。
+        返回的 self.tasks 是 (work_dir, task_name) 的列表。
+        """
+        self.tasks: List[tuple] = []
+        for work_dir in self.work_dirs:
+            for t in self._scan_dir(work_dir):
+                self.tasks.append((work_dir, t))
+
+    def _remote_task_dir(self, work_dir: str, task_name: str) -> str:
+        """远程 task 路径，用 work_dir 的 basename 做子目录避免冲突。"""
+        dir_tag = os.path.basename(work_dir)
+        return f"{self.remote_dir}/{dir_tag}/{task_name}"
+
+    def _generate_sbatch(self, work_dir: str, task_name: str) -> str:
+        """为单个 task 生成 sbatch 脚本内容。"""
+        header_lines: list = self.rc.get('slurm_header_script', [])
+        header = "\n".join(header_lines)
+        fp_command = self.rc.get('fp_command')
+        remote_task = self._remote_task_dir(work_dir, task_name)
+        return (
+            f"{header}\n"
+            f"cd {remote_task}\n"
+            f"{fp_command} 1>>fp.log 2>>fp.log\n"
+            f"if test $? -eq 0; then touch task_finished; else exit 1; fi\n"
+        )
+
+    def write_remote_file(self, remote_path: str, content: str):
+        """通过 SFTP 写入远程文件。"""
+        self.ensure_alive()
+        remote_path = pathlib.PurePath(remote_path).as_posix()
+        with self.sftp.open(remote_path, "w") as fp:
+            fp.write(content)
+
+    # ---- 上传 / 提交 / 状态 / 下载 ------------------------------------------
+
+    def _upload_task(self, work_dir: str, task_name: str):
+        """rsync 上传单个 task 文件夹 + sbatch 脚本到远程。"""
+        local_path = os.path.join(work_dir, task_name) + "/"
+        remote_path = self._remote_task_dir(work_dir, task_name)
+        self.block_checkcall(f"mkdir -p {remote_path}")
+        self._rsync(from_f=local_path, to_f=remote_path + "/", send=True)
+        sbatch_content = self._generate_sbatch(work_dir, task_name)
+        dir_tag = os.path.basename(work_dir)
+        sub_path = f"{self.remote_dir}/{dir_tag}/{task_name}.sub"
+        self.write_remote_file(sub_path, sbatch_content)
+        dlog.info(f"uploaded {dir_tag}/{task_name}")
+
+    @retry(max_retry=3, sleep=60, catch_exception=RetrySignal)
+    def _submit_task(self, work_dir: str, task_name: str) -> str:
+        """sbatch 提交单个 task，返回 job_id。"""
+        dir_tag = os.path.basename(work_dir)
+        sub_file = f"{dir_tag}/{task_name}.sub"
+        command = f"cd {shlex.quote(self.remote_dir)} && sbatch {shlex.quote(sub_file)}"
+        ret, stdin, stdout, stderr = self.block_call(command)
+        if ret != 0:
+            err_str = stderr.read().decode("utf-8")
+            if "Socket timed out" in err_str or "Unable to contact slurm controller" in err_str or "Unexpected message received" in err_str:
+                raise RetrySignal(f"submit error for {task_name}: {err_str}")
+            if "Job violates accounting/QOS policy" in err_str or "Slurm temporarily unable to accept job" in err_str:
+                return ""
+            raise RuntimeError(f"sbatch failed for {task_name}: {err_str}")
+        job_id = stdout.readlines()[0].split()[-1].strip()
+        dlog.info(f"{task_name} submitted as job {job_id}")
+        return job_id
+
+    @retry(max_retry=3, sleep=60, catch_exception=RetrySignal)
+    def check_status(self, job_id: str) -> JobStatus:
+        """squeue 查询 job 状态。job 不在队列中时返回 terminated（需进一步检查 task_finished）。"""
+        if not job_id:
+            return JobStatus.unsubmitted
+        command = 'squeue -h -o "%.18i %.2t" -j ' + job_id
+        ret, stdin, stdout, stderr = self.block_call(command)
+        if ret != 0:
+            err_str = stderr.read().decode("utf-8")
+            if "Invalid job id specified" in err_str:
+                return JobStatus.terminated
+            if "Socket timed out" in err_str or "Unable to contact slurm controller" in err_str or "Unexpected message received" in err_str:
+                raise RetrySignal(f"squeue error: {err_str}")
+            raise RuntimeError(f"squeue failed for {job_id}: {err_str}")
+        status_line = stdout.read().decode("utf-8").strip()
+        if not status_line:
+            return JobStatus.terminated
+        status_word = status_line.split()[-1]
+        if status_word in ("PD", "CF", "S"):
+            return JobStatus.waiting
+        if status_word == "R":
+            return JobStatus.running
+        if status_word == "CG":
+            return JobStatus.completing
+        return JobStatus.terminated
+
+    def _check_remote_finished(self, work_dir: str, task_name: str) -> bool:
+        """检查远程 task 目录下是否存在 task_finished 标记。"""
+        self.ensure_alive()
+        remote_path = self._remote_task_dir(work_dir, task_name) + "/task_finished"
+        try:
+            self.sftp.stat(remote_path)
+            return True
+        except OSError:
+            return False
+
+    def _download_task(self, work_dir: str, task_name: str):
+        """rsync 下载单个 task 结果，并在本地写入 task_finished 标记。"""
+        remote_path = self._remote_task_dir(work_dir, task_name) + "/"
+        local_path = os.path.join(work_dir, task_name) + "/"
+        additional_args = [
+            "--exclude=POTCAR", "--exclude=*.xml", "--exclude=XDATCAR",
+        ]
+        self._rsync(from_f=remote_path, to_f=local_path, send=False,
+                     additional_args=additional_args)
+        # 确保本地 task_finished 标记存在
+        marker = os.path.join(work_dir, task_name, "task_finished")
+        if not os.path.exists(marker):
+            open(marker, "w").close()
+        dlog.info(f"downloaded {task_name}")
+
+    # ---- 主流程 ------------------------------------------------------------
+
+    def run_submission(self):
+        """主流程: 按目录逐个处理，每个目录跑完后 reload yaml 拿最新配置和目录列表。
+        每次 _fill_queue 前也 reload yaml 以获取最新 group_numbers。
+        """
+        self._reload_config()
+        self.block_checkcall(f"mkdir -p {self.remote_dir}")
+
+        processed_dirs: set = set()
+        failed_tasks: list = []
+
+        while True:
+            # 从最新 yaml 拿目录列表
+            raw_dirs = self.rc.get('dirs', ["."])
+            all_dirs = [os.path.abspath(d) for d in raw_dirs]
+            # 找到下一个未处理的目录
+            next_dir = None
+            for d in all_dirs:
+                if d not in processed_dirs:
+                    next_dir = d
+                    break
+            if next_dir is None:
+                break
+
+            # 扫描该目录
+            pending = self._scan_dir(next_dir)
+            if not pending:
+                dlog.info(f"[{os.path.basename(next_dir)}] nothing to do, skip")
+                processed_dirs.add(next_dir)
+                self._reload_config()
+                continue
+
+            queue = [(next_dir, t) for t in pending]
+            active: dict = {}
+
+            def _fill_queue():
+                self._reload_config()
+                max_c = self.rc.get('group_numbers', 10)
+                while queue and len(active) < max_c:
+                    key = queue.pop(0)
+                    wd, tn = key
+                    self._upload_task(wd, tn)
+                    job_id = self._submit_task(wd, tn)
+                    active[key] = job_id
+
+            _fill_queue()
+            dlog.info(
+                f"[{os.path.basename(next_dir)}] submitted: {len(active)}, queued: {len(queue)}"
+            )
+
+            # 轮询该目录的 task
+            while active:
+                time.sleep(30)
+                done_keys = []
+                statuses: dict = {}
+
+                for key, job_id in list(active.items()):
+                    wd, tn = key
+                    status = self.check_status(job_id)
+                    statuses[key] = status
+
+                    if status == JobStatus.terminated:
+                        if self._check_remote_finished(wd, tn):
+                            self._download_task(wd, tn)
+                            done_keys.append(key)
+                        else:
+                            marker = os.path.join(wd, tn, "task_failed")
+                            open(marker, "w").close()
+                            failed_tasks.append(f"{wd}/{tn}")
+                            dlog.warning(f"{tn} FAILED, marked task_failed")
+                            done_keys.append(key)
+
+                for k in done_keys:
+                    del active[k]
+
+                if done_keys:
+                    _fill_queue()
+
+                n_running = sum(
+                    1 for s in statuses.values()
+                    if s in (JobStatus.running, JobStatus.completing)
+                )
+                n_waiting = sum(1 for s in statuses.values() if s == JobStatus.waiting)
+                dlog.info(
+                    f"[{os.path.basename(next_dir)}] active: {len(active)}, "
+                    f"running: {n_running}, waiting: {n_waiting}, queued: {len(queue)}"
+                )
+
+            processed_dirs.add(next_dir)
+            dlog.info(f"[{os.path.basename(next_dir)}] done")
+            # reload yaml 以发现新增目录
+            self._reload_config()
+
+        if failed_tasks:
+            dlog.warning(f"{len(failed_tasks)} tasks failed:")
+            for f in failed_tasks:
+                dlog.warning(f"  {f}")
+        else:
+            dlog.info("all tasks completed successfully")
+
+        clean = self.rc.get('clean', True)
+        if clean:
+            self.block_checkcall(f"rm -rf {self.remote_dir}")
+            dlog.info(f"cleaned remote directory {self.remote_dir}")

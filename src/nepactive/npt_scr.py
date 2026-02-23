@@ -2,16 +2,16 @@
 NPT ensemble using Stochastic Cell Rescaling (SCR) barostat
 combined with BDP (Bussi-Donadio-Parrinello) thermostat.
 
+Ported from GPUMD: src/integrate/ensemble_npt_scr.cu + svr_utilities.cuh
+
 References:
 [1] Mattia Bernetti and Giovanni Bussi,
     Pressure control using stochastic cell rescaling,
     J. Chem. Phys. 153, 114107 (2020).
-    https://doi.org/10.1063/1.5144289
 
 [2] G. Bussi, D. Donadio, and M. Parrinello,
     Canonical sampling through velocity rescaling,
     J. Chem. Phys. 126, 014101 (2007).
-    https://doi.org/10.1063/1.2408420
 """
 
 from __future__ import annotations
@@ -21,207 +21,295 @@ from typing import Optional, Union, IO, List
 from ase import Atoms, units
 from ase.md.md import MolecularDynamics
 
+K_B = units.kB  # eV/K
 
-# Boltzmann constant in eV/K (ASE uses eV as energy unit)
-K_B = units.kB
 
+# ============================================================
+# BDP thermostat utilities (from svr_utilities.cuh)
+# ============================================================
 
 def gasdev(rng: np.random.Generator) -> float:
-    """Generate a random number from standard normal distribution."""
+    """Standard normal deviate. Matches GPUMD gasdev()."""
     return rng.standard_normal()
 
 
-def gamma_deviate(rng: np.random.Generator, alpha: float) -> float:
-    """Generate a random number from gamma distribution with shape alpha."""
-    return rng.gamma(alpha)
+def gamdev(ia: int, rng: np.random.Generator) -> float:
+    """
+    Gamma deviate with integer shape parameter.
+    Matches GPUMD gamdev() from svr_utilities.cuh.
+    """
+    if ia < 1:
+        return 0.0
+    if ia < 6:
+        x = 1.0
+        for _ in range(ia):
+            x *= rng.random()
+        return -np.log(x)
+    else:
+        while True:
+            while True:
+                v1 = rng.random()
+                v2 = 2.0 * rng.random() - 1.0
+                if v1 * v1 + v2 * v2 <= 1.0:
+                    break
+            y = v2 / v1
+            am = ia - 1
+            s = np.sqrt(2.0 * am + 1.0)
+            x = s * y + am
+            if x > 0:
+                break
+        e = (1.0 + y * y) * np.exp(am * np.log(x / am) - s * y)
+        while rng.random() > e:
+            while True:
+                while True:
+                    v1 = rng.random()
+                    v2 = 2.0 * rng.random() - 1.0
+                    if v1 * v1 + v2 * v2 <= 1.0:
+                        break
+                y = v2 / v1
+                am = ia - 1
+                s = np.sqrt(2.0 * am + 1.0)
+                x = s * y + am
+                if x > 0:
+                    break
+            e = (1.0 + y * y) * np.exp(am * np.log(x / am) - s * y)
+        return x
 
 
-def resamplekin(ke_old: float, sigma: float, ndeg: int, taut: float,
+def resamplekin_sumnoises(nn: int, rng: np.random.Generator) -> float:
+    """
+    Sum of nn independent squared Gaussian noises.
+    Matches GPUMD resamplekin_sumnoises().
+    """
+    if nn == 0:
+        return 0.0
+    elif nn == 1:
+        rr = gasdev(rng)
+        return rr * rr
+    elif nn % 2 == 0:
+        return 2.0 * gamdev(nn // 2, rng)
+    else:
+        rr = gasdev(rng)
+        return 2.0 * gamdev((nn - 1) // 2, rng) + rr * rr
+
+
+def resamplekin(kk: float, sigma: float, ndeg: int, taut: float,
                 rng: np.random.Generator) -> float:
     """
-    Resample kinetic energy using the BDP algorithm.
-
-    This implements the stochastic velocity rescaling thermostat from
-    Bussi, Donadio, and Parrinello, J. Chem. Phys. 126, 014101 (2007).
+    Resample kinetic energy (BDP algorithm).
+    Matches GPUMD resamplekin() exactly.
 
     Parameters
     ----------
-    ke_old : float
-        Current kinetic energy
-    sigma : float
-        Target kinetic energy (0.5 * ndeg * kB * T)
-    ndeg : int
-        Number of degrees of freedom
-    taut : float
-        Thermostat coupling parameter (dimensionless)
-    rng : np.random.Generator
-        Random number generator
-
-    Returns
-    -------
-    float
-        New kinetic energy after rescaling
+    kk : current kinetic energy (eV)
+    sigma : target kinetic energy = ndeg * kB * T / 2 (eV)
+    ndeg : degrees of freedom
+    taut : thermostat coupling (dimensionless, in units of call frequency)
+    rng : random number generator
     """
     if taut > 0.1:
-        c1 = np.exp(-1.0 / taut)
+        factor = np.exp(-1.0 / taut)
     else:
-        c1 = 0.0
-    c2 = (1.0 - c1) * sigma / ndeg
+        factor = 0.0
+    rr = gasdev(rng)
+    return (kk
+            + (1.0 - factor) * (sigma * (resamplekin_sumnoises(ndeg - 1, rng) + rr * rr) / ndeg - kk)
+            + 2.0 * rr * np.sqrt(kk * sigma / ndeg * (1.0 - factor) * factor))
 
-    r1 = gasdev(rng)
 
-    if ndeg == 1:
-        # Special case for 1 degree of freedom
-        ke_new = c1 * ke_old + c2 * r1 * r1 + 2.0 * np.sqrt(c1 * c2 * ke_old) * r1
-    else:
-        # General case
-        r2_sum = 2.0 * gamma_deviate(rng, (ndeg - 1) / 2.0)
-        ke_new = (c1 * ke_old + c2 * (r2_sum + r1 * r1) +
-                  2.0 * np.sqrt(c1 * c2 * ke_old) * r1)
+# ============================================================
+# Barostat functions (from ensemble_npt_scr.cu)
+# All pressures in ASE internal units (eV/Å³)
+# ============================================================
 
-    return max(ke_new, 0.0)
+def cpu_pressure_isotropic(rng, target_pressure, p_coupling, p_diag,
+                           volume, target_temperature):
+    """
+    Isotropic SCR barostat. Returns scalar scale_factor.
+    Matches GPUMD cpu_pressure_isotropic().
+    """
+    p_instant = (p_diag[0] + p_diag[1] + p_diag[2]) / 3.0
+    scale_berendsen = 1.0 - p_coupling[0] * (target_pressure[0] - p_instant)
+    # Factor 2/3: 3 directions coupled
+    scale_stochastic = (
+        np.sqrt(2.0 / 3.0 * p_coupling[0] * K_B * target_temperature / volume)
+        * gasdev(rng)
+    )
+    return scale_berendsen + scale_stochastic
 
+
+def cpu_pressure_orthogonal(rng, deform, deform_rate, cell_diag,
+                            target_temperature, target_pressure,
+                            p_coupling, p_diag, volume):
+    """
+    Orthogonal SCR barostat. Returns scale_factors[3].
+    Matches GPUMD cpu_pressure_orthogonal().
+    """
+    scale_factors = np.ones(3)
+    for i in range(3):
+        if deform[i]:
+            old_len = cell_diag[i]
+            scale_factors[i] = (old_len + deform_rate[i]) / old_len
+        else:
+            scale_berendsen = 1.0 - p_coupling[i] * (target_pressure[i] - p_diag[i])
+            scale_stochastic = (
+                np.sqrt(2.0 * p_coupling[i] * K_B * target_temperature / volume)
+                * gasdev(rng)
+            )
+            scale_factors[i] = scale_berendsen + scale_stochastic
+    return scale_factors
+
+
+def cpu_pressure_triclinic(rng, target_temperature, target_pressure,
+                           p_coupling, stress_voigt, volume):
+    """
+    Triclinic SCR barostat. Returns mu[3x3].
+    Matches GPUMD cpu_pressure_triclinic().
+
+    Note on index mapping:
+      GPUMD thermo order: [xx, yy, zz, xy, xz, yz]
+      ASE Voigt order:    [xx, yy, zz, yz, xz, xy]
+      target_pressure/p_coupling: Voigt order [xx, yy, zz, yz, xz, xy]
+
+    GPUMD source (line 174-179):
+      mu[0,0] = 1 - tau[0]*(p0[0] - p[0])   # xx
+      mu[1,1] = 1 - tau[1]*(p0[1] - p[1])   # yy
+      mu[2,2] = 1 - tau[2]*(p0[2] - p[2])   # zz
+      mu_xy = -tau[5]*(p0[5] - p[3])         # xy: voigt[5], thermo[3]
+      mu_xz = -tau[4]*(p0[4] - p[4])         # xz: voigt[4], thermo[4]
+      mu_yz = -tau[3]*(p0[3] - p[5])         # yz: voigt[3], thermo[5]
+
+    Since ASE gives us Voigt order directly, stress_voigt[5]=xy, etc.
+    """
+    p0 = target_pressure  # Voigt: [xx, yy, zz, yz, xz, xy]
+    p = stress_voigt       # Voigt: [xx, yy, zz, yz, xz, xy]
+    tau = p_coupling       # Voigt: [xx, yy, zz, yz, xz, xy]
+
+    mu = np.eye(3)
+
+    # Diagonal: xx, yy, zz
+    for i in range(3):
+        mu[i, i] = 1.0 - tau[i] * (p0[i] - p[i])
+
+    # Off-diagonal (symmetric)
+    # xy: Voigt index 5 -> mu[0,1], mu[1,0]
+    mu[0, 1] = mu[1, 0] = -tau[5] * (p0[5] - p[5])
+    # xz: Voigt index 4 -> mu[0,2], mu[2,0]
+    mu[0, 2] = mu[2, 0] = -tau[4] * (p0[4] - p[4])
+    # yz: Voigt index 3 -> mu[1,2], mu[2,1]
+    mu[1, 2] = mu[2, 1] = -tau[3] * (p0[3] - p[3])
+
+    # Stochastic part: p_coupling as 3x3 matrix
+    tau_3x3 = np.array([
+        [tau[0], tau[5], tau[4]],
+        [tau[5], tau[1], tau[3]],
+        [tau[4], tau[3], tau[2]],
+    ])
+    for r in range(3):
+        for c in range(3):
+            mu[r, c] += (
+                np.sqrt(2.0 * tau_3x3[r, c] * K_B * target_temperature / volume)
+                * gasdev(rng)
+            )
+
+    return mu
+
+
+# 默认体积模量 (GPa)，含能材料典型值 10~30 GPa
+# RDX ~12, HMX ~15, CL-20 ~18, TATB ~16, TNT ~11
+# 取 15 GPa 作为通用默认值
+DEFAULT_BULK_MODULUS = 15.0  # GPa
+
+
+def _tau_p_to_coupling(tau_p, elastic_modulus=DEFAULT_BULK_MODULUS):
+    """
+    将 GPUMD 风格的 tau_p (单位 timestep) 转换为 SCR 内部 p_coupling。
+    与 GPUMD integrate.cu 一致:
+        p_coupling = PRESSURE_UNIT_CONVERSION / (tau_p * 3.0 * elastic_modulus)
+    其中 PRESSURE_UNIT_CONVERSION = 160.2177 (eV/Å³ <-> GPa)
+    """
+    PRESSURE_UNIT_CONVERSION = 160.2177
+    return PRESSURE_UNIT_CONVERSION / (tau_p * 3.0 * elastic_modulus)
+
+
+# ============================================================
+# NPT_SCR class
+# ============================================================
 
 class NPT_SCR(MolecularDynamics):
     """
-    NPT molecular dynamics using Stochastic Cell Rescaling barostat
-    combined with the BDP (velocity rescaling) thermostat.
-
-    This class implements the stochastic cell rescaling method from
-    Bernetti and Bussi, J. Chem. Phys. 153, 114107 (2020), which provides
-    a simple and robust way to control pressure in molecular dynamics.
-
-    The thermostat uses the Bussi-Donadio-Parrinello velocity rescaling
-    method from J. Chem. Phys. 126, 014101 (2007).
-
-    Supports three pressure modes:
-    - isotropic: uniform scaling in all directions
-    - orthogonal: independent scaling in x, y, z (for orthorhombic cells)
-    - triclinic: full 3x3 cell tensor scaling
+    NPT MD using SCR barostat + BDP thermostat.
+    Ported from GPUMD ensemble_npt_scr.
 
     Parameters
     ----------
     atoms : Atoms
-        The atoms object.
-    timestep : float
-        Time step in ASE time units (fs).
-    temperature : float
-        Target temperature in Kelvin.
-    pressure : float or array_like
-        Target pressure. For isotropic: single value in GPa.
-        For orthogonal: [Pxx, Pyy, Pzz] in GPa.
-        For triclinic: [Pxx, Pyy, Pzz, Pyz, Pxz, Pxy] in GPa (Voigt notation).
-    temperature_coupling : float
-        Thermostat coupling time scale in units of timestep.
-        Typical value: 100 * timestep.
-    pressure_coupling : float or array_like
-        Barostat coupling parameter(s). Same shape as pressure.
-        Typical value: 1e-4 to 1e-3 per step.
-    pmode : str
-        Pressure mode: 'iso', 'ortho', or 'tri'.
-    deform : array_like, optional
-        Deformation rates [rate_x, rate_y, rate_z] in Angstrom/step.
-        If provided, overrides pressure control in that direction.
-    seed : int, optional
-        Random seed for reproducibility.
-    trajectory : str, optional
-        Trajectory file name.
-    logfile : str or file, optional
-        Log file for MD output.
-    loginterval : int
-        Interval for writing to log file.
+    timestep : float, ASE 时间单位 (fs * units.fs)
+    temperature : float, 目标温度 (K)
+    pressure : float or list, 目标压力 (GPa)，内部转换为 eV/Å³
+    tau_t : float, BDP 恒温器弛豫时间，单位 timestep 数。
+        与 GPUMD 的 tau_T 一致，默认 100。越大恒温越弱。
+    tau_p : float, SCR 气压计弛豫时间，单位 timestep 数。
+        与 GPUMD 的 tau_p 一致，默认 2000。
+        内部通过 1/(tau_p * 3 * bulk_modulus) 转换为耦合系数。
+    elastic_modulus : float, 体积模量 (GPa)，默认 15 GPa（含能材料典型值）。
+        一般不需要用户输入。
+    pmode : str, 压力模式: 'iso'(各向同性) / 'ortho'(正交) / 'tri'(三斜)
+    deform : list or None, 形变速率 [rate_x, rate_y, rate_z] (Å/step)
+    seed : int or None, 随机数种子
     """
 
-    def __init__(
-        self,
-        atoms: Atoms,
-        timestep: float,
-        temperature: float,
-        pressure: Union[float, List[float]],
-        temperature_coupling: float = 100.0,
-        pressure_coupling: Union[float, List[float]] = 1e-4,
-        pmode: str = 'iso',
-        deform: Optional[List[float]] = None,
-        seed: Optional[int] = None,
-        trajectory: Optional[str] = None,
-        logfile: Optional[Union[str, IO]] = None,
-        loginterval: int = 1,
-        **kwargs
-    ):
-        super().__init__(
-            atoms=atoms,
-            timestep=timestep,
-            trajectory=trajectory,
-            logfile=logfile,
-            loginterval=loginterval,
-            **kwargs
-        )
+    def __init__(self, atoms, timestep, temperature, pressure,
+                 tau_t=100.0,                              # 单位 timestep，与 GPUMD tau_T 一致
+                 tau_p=2000.0,                             # 单位 timestep，与 GPUMD tau_p 一致
+                 elastic_modulus=DEFAULT_BULK_MODULUS,      # GPa，默认 15
+                 pmode='iso', deform=None, seed=None, **kwargs):
+        super().__init__(atoms=atoms, timestep=timestep, **kwargs)
 
         self.temp_target = temperature
-        self.temp_coupling = temperature_coupling
+        self.temp_coupling = tau_t
         self.pmode = pmode.lower()
+        self.natoms = len(atoms)
+        self.rng = np.random.default_rng(seed)
 
-        # Initialize random number generator
-        if seed is not None:
-            self.rng = np.random.default_rng(seed)
-        else:
-            self.rng = np.random.default_rng()
-
-        # Set up pressure targets and coupling based on mode
-        self._setup_pressure(pressure, pressure_coupling)
-
-        # Set up deformation if provided
+        self._setup_pressure(pressure, tau_p, elastic_modulus)
         self._setup_deform(deform)
 
-        # Cache atom properties
-        self.natoms = len(atoms)
-        assert hasattr(self, 'masses') and self.masses is not None
+    def _setup_pressure(self, pressure, tau_p, elastic_modulus):
+        """
+        Convert GPa input to eV/Å³ internal units.
+        Convert tau_p (timestep) + elastic_modulus (GPa) to p_coupling.
+        与 GPUMD 一致: p_coupling = PRESSURE_UNIT_CONVERSION / (tau_p * 3 * C)
+        """
+        gpa = units.GPa  # eV/Å³ per GPa
+        p_coup = _tau_p_to_coupling(tau_p, elastic_modulus)
 
-    def _setup_pressure(self, pressure, pressure_coupling):
-        """Set up pressure targets and coupling parameters."""
-        # Convert pressure from GPa to ASE internal units (eV/Å³)
-        pressure_unit = units.GPa
+        self.target_pressure = np.zeros(6)
+        self.p_coupling = np.zeros(6)
 
         if self.pmode == 'iso':
-            self.num_pressure_components = 1
-            self.target_pressure = np.zeros(6)
-            self.pressure_coupling = np.zeros(6)
-            p = pressure if np.isscalar(pressure) else pressure[0]
-            tau = pressure_coupling if np.isscalar(pressure_coupling) else pressure_coupling[0]
-            self.target_pressure[:3] = p * pressure_unit
-            self.pressure_coupling[:3] = tau
-
+            self.num_p_components = 1
+            p = float(pressure) if np.isscalar(pressure) else float(pressure[0])
+            self.target_pressure[:3] = p * gpa
+            self.p_coupling[:3] = p_coup
         elif self.pmode == 'ortho':
-            self.num_pressure_components = 3
-            self.target_pressure = np.zeros(6)
-            self.pressure_coupling = np.zeros(6)
+            self.num_p_components = 3
             if np.isscalar(pressure):
-                self.target_pressure[:3] = pressure * pressure_unit
+                self.target_pressure[:3] = float(pressure) * gpa
             else:
-                self.target_pressure[:3] = np.array(pressure[:3]) * pressure_unit
-            if np.isscalar(pressure_coupling):
-                self.pressure_coupling[:3] = pressure_coupling
-            else:
-                self.pressure_coupling[:3] = np.array(pressure_coupling[:3])
-
+                self.target_pressure[:3] = np.array(pressure[:3]) * gpa
+            self.p_coupling[:3] = p_coup
         elif self.pmode == 'tri':
-            self.num_pressure_components = 6
-            self.target_pressure = np.zeros(6)
-            self.pressure_coupling = np.zeros(6)
+            self.num_p_components = 6
             if np.isscalar(pressure):
-                self.target_pressure[:] = pressure * pressure_unit
+                self.target_pressure[:] = float(pressure) * gpa
             else:
-                self.target_pressure[:] = np.array(pressure) * pressure_unit
-            if np.isscalar(pressure_coupling):
-                self.pressure_coupling[:] = pressure_coupling
-            else:
-                self.pressure_coupling[:] = np.array(pressure_coupling)
+                self.target_pressure[:] = np.array(pressure) * gpa
+            self.p_coupling[:] = p_coup
         else:
-            raise ValueError(f"Unknown pressure mode: {self.pmode}. "
-                           f"Use 'iso', 'ortho', or 'tri'.")
+            raise ValueError(f"Unknown pmode: {self.pmode}")
 
     def _setup_deform(self, deform):
-        """Set up deformation rates."""
         if deform is None:
             self.deform = [False, False, False]
             self.deform_rate = [0.0, 0.0, 0.0]
@@ -229,560 +317,327 @@ class NPT_SCR(MolecularDynamics):
             self.deform = [d != 0 for d in deform]
             self.deform_rate = list(deform)
 
-    def get_stress_tensor(self) -> np.ndarray:
+    def _get_stress_voigt(self):
         """
-        Get current stress tensor in Voigt notation.
-
-        Returns stress as [sigma_xx, sigma_yy, sigma_zz, sigma_yz, sigma_xz, sigma_xy]
-        in ASE internal units (eV/Å³).
+        Get pressure tensor in Voigt notation [xx, yy, zz, yz, xz, xy].
+        Returns positive pressure (compression positive), in eV/Å³.
+        ASE get_stress returns -sigma/V * V = -sigma, so negate it.
         """
-        # ASE returns stress with opposite sign convention, and in Voigt order
-        # [xx, yy, zz, yz, xz, xy]
-        stress = -self.atoms.get_stress(voigt=True, include_ideal_gas=True)
-        return stress
-
-    def get_pressure_diagonal(self) -> np.ndarray:
-        """Get diagonal pressure components [Pxx, Pyy, Pzz]."""
-        stress = self.get_stress_tensor()
-        return stress[:3]
+        return -self.atoms.get_stress(voigt=True, include_ideal_gas=True)
 
     def _apply_thermostat(self):
-        """Apply BDP thermostat (stochastic velocity rescaling)."""
+        """
+        BDP thermostat: stochastic velocity rescaling.
+        Matches GPUMD compute2() thermostat section.
+        """
         velocities = self.atoms.get_velocities()
         masses = self.atoms.get_masses()
 
-        # Calculate current kinetic energy
-        ke = 0.5 * np.sum(masses[:, np.newaxis] * velocities**2)
-
-        # Degrees of freedom (3N for no constraints)
+        # Kinetic energy: ek = 0.5 * sum(m * v^2)
+        ke = 0.5 * np.sum(masses[:, np.newaxis] * velocities ** 2)
         ndeg = 3 * self.natoms
+        sigma = ndeg * K_B * self.temp_target * 0.5
 
-        # Target kinetic energy
-        sigma = 0.5 * ndeg * K_B * self.temp_target
-
-        # Resample kinetic energy
         ke_new = resamplekin(ke, sigma, ndeg, self.temp_coupling, self.rng)
-
-        # Scale velocities
         if ke > 0:
-            scale_factor = np.sqrt(ke_new / ke)
-            self.atoms.set_velocities(velocities * scale_factor)
-
-    def _apply_barostat_isotropic(self):
-        """Apply isotropic SCR barostat."""
-        cell = self.atoms.get_cell()
-        volume = self.atoms.get_volume()
-
-        # Get current pressure (average of diagonal) in GPa
-        p_current = self.get_pressure_diagonal()
-        p_instant = np.mean(p_current) / units.GPa  # Convert to GPa
-        p_target = self.target_pressure[0] / units.GPa  # Convert to GPa
-        tau = self.pressure_coupling[0]
-
-        # Berendsen-like deterministic part (pressure in GPa)
-        scale_berendsen = 1.0 - tau * (p_target - p_instant)
-
-        # Stochastic part (SCR correction)
-        # Factor 2/3 because 3 directions are coupled
-        # Use GPUMD's K_B = 8.617333262e-5 eV/K
-        scale_stochastic = (np.sqrt(2.0 / 3.0 * tau * K_B * self.temp_target / volume)
-                          * gasdev(self.rng))
-
-        scale_factor = scale_berendsen + scale_stochastic
-
-        # Scale cell and positions
-        new_cell = cell * scale_factor
-        self.atoms.set_cell(new_cell, scale_atoms=True)
-
-    def _apply_barostat_orthogonal(self):
-        """Apply orthogonal SCR barostat (independent x, y, z scaling)."""
-        cell = self.atoms.get_cell().array.copy()
-        volume = self.atoms.get_volume()
-        positions = self.atoms.get_positions()
-
-        p_current = self.get_pressure_diagonal()
-        scale_factors = np.ones(3)
-
-        for i in range(3):
-            if self.deform[i]:
-                # Apply deformation
-                old_length = cell[i, i]
-                new_length = old_length + self.deform_rate[i]
-                scale_factors[i] = new_length / old_length
-            else:
-                # Apply SCR barostat (pressure in GPa)
-                p_target = self.target_pressure[i] / units.GPa
-                p_inst = p_current[i] / units.GPa
-                tau = self.pressure_coupling[i]
-
-                scale_berendsen = 1.0 - tau * (p_target - p_inst)
-                scale_stochastic = (np.sqrt(2.0 * tau * K_B * self.temp_target / volume)
-                                  * gasdev(self.rng))
-                scale_factors[i] = scale_berendsen + scale_stochastic
-
-        # Scale cell diagonal elements
-        for i in range(3):
-            cell[i, i] *= scale_factors[i]
-
-        # Scale positions
-        positions[:, 0] *= scale_factors[0]
-        positions[:, 1] *= scale_factors[1]
-        positions[:, 2] *= scale_factors[2]
-
-        self.atoms.set_cell(cell, scale_atoms=False)
-        self.atoms.set_positions(positions)
-
-    def _apply_barostat_triclinic(self):
-        """Apply triclinic SCR barostat (full cell tensor scaling)."""
-        cell = self.atoms.get_cell().array.copy()
-        volume = self.atoms.get_volume()
-        positions = self.atoms.get_positions()
-
-        # Get full stress tensor and convert to GPa
-        stress = self.get_stress_tensor() / units.GPa
-        # stress order: [xx, yy, zz, yz, xz, xy]
-
-        # Build mu matrix (deformation gradient)
-        # target_pressure order: [xx, yy, zz, yz, xz, xy] (Voigt)
-        mu = np.eye(3)
-
-        # Diagonal elements
-        for i in range(3):
-            p_target = self.target_pressure[i] / units.GPa
-            tau = self.pressure_coupling[i]
-            mu[i, i] = 1.0 - tau * (p_target - stress[i])
-            mu[i, i] += np.sqrt(2.0 * tau * K_B * self.temp_target / volume) * gasdev(self.rng)
-
-        # Off-diagonal elements (symmetric)
-        # xy: index 5 in Voigt, position [0,1] and [1,0]
-        tau_xy = self.pressure_coupling[5]
-        p_target_xy = self.target_pressure[5] / units.GPa
-        mu_xy = -tau_xy * (p_target_xy - stress[5])
-        mu_xy += np.sqrt(2.0 * tau_xy * K_B * self.temp_target / volume) * gasdev(self.rng)
-        mu[0, 1] = mu[1, 0] = mu_xy
-
-        # xz: index 4 in Voigt, position [0,2] and [2,0]
-        tau_xz = self.pressure_coupling[4]
-        p_target_xz = self.target_pressure[4] / units.GPa
-        mu_xz = -tau_xz * (p_target_xz - stress[4])
-        mu_xz += np.sqrt(2.0 * tau_xz * K_B * self.temp_target / volume) * gasdev(self.rng)
-        mu[0, 2] = mu[2, 0] = mu_xz
-
-        # yz: index 3 in Voigt, position [1,2] and [2,1]
-        tau_yz = self.pressure_coupling[3]
-        p_target_yz = self.target_pressure[3] / units.GPa
-        mu_yz = -tau_yz * (p_target_yz - stress[3])
-        mu_yz += np.sqrt(2.0 * tau_yz * K_B * self.temp_target / volume) * gasdev(self.rng)
-        mu[1, 2] = mu[2, 1] = mu_yz
-
-        # Apply transformation: h_new = mu @ h_old
-        new_cell = mu @ cell
-
-        # Transform positions: r_new = mu @ r_old
-        new_positions = (mu @ positions.T).T
-
-        self.atoms.set_cell(new_cell, scale_atoms=False)
-        self.atoms.set_positions(new_positions)
+            factor = np.sqrt(ke_new / ke)
+            self.atoms.set_velocities(velocities * factor)
 
     def _apply_barostat(self):
-        """Apply the appropriate barostat based on pressure mode."""
-        if self.num_pressure_components == 1:
-            self._apply_barostat_isotropic()
-        elif self.num_pressure_components == 3:
-            self._apply_barostat_orthogonal()
+        """Apply SCR barostat matching GPUMD compute2()."""
+        stress = self._get_stress_voigt()  # [xx, yy, zz, yz, xz, xy] in eV/Å³
+        volume = self.atoms.get_volume()
+        cell = self.atoms.get_cell().array.copy()
+
+        if self.num_p_components == 1:
+            # Isotropic
+            p_diag = stress[:3]
+            sf = cpu_pressure_isotropic(
+                self.rng, self.target_pressure, self.p_coupling,
+                p_diag, volume, self.temp_target)
+            # Scale all cell vectors uniformly
+            new_cell = cell * sf
+            self.atoms.set_cell(new_cell, scale_atoms=True)
+
+        elif self.num_p_components == 3:
+            # Orthogonal
+            p_diag = stress[:3]
+            cell_diag = np.array([cell[0, 0], cell[1, 1], cell[2, 2]])
+            sf = cpu_pressure_orthogonal(
+                self.rng, self.deform, self.deform_rate, cell_diag,
+                self.temp_target, self.target_pressure, self.p_coupling,
+                p_diag, volume)
+            # Scale cell diagonal and positions independently
+            for i in range(3):
+                cell[i, i] *= sf[i]
+            positions = self.atoms.get_positions()
+            for i in range(3):
+                positions[:, i] *= sf[i]
+            self.atoms.set_cell(cell, scale_atoms=False)
+            self.atoms.set_positions(positions)
+
         else:
-            self._apply_barostat_triclinic()
+            # Triclinic
+            mu = cpu_pressure_triclinic(
+                self.rng, self.temp_target, self.target_pressure,
+                self.p_coupling, stress, volume)
+            # h_new = mu @ h_old, r_new = mu @ r_old
+            new_cell = mu @ cell
+            positions = self.atoms.get_positions()
+            new_positions = (mu @ positions.T).T
+            self.atoms.set_cell(new_cell, scale_atoms=False)
+            self.atoms.set_positions(new_positions)
 
     def step(self):
-        """Perform one MD step using velocity Verlet with SCR barostat."""
+        """
+        One MD step: velocity Verlet + BDP thermostat + SCR barostat.
+        Matches GPUMD compute1() + compute2() sequence.
+        """
         atoms = self.atoms
-
-        # Get current state
         masses = atoms.get_masses()[:, np.newaxis]
-        positions = atoms.get_positions()
+
+        # compute1: first half velocity Verlet
         velocities = atoms.get_velocities()
         forces = atoms.get_forces()
-
-        # First half of velocity Verlet: v(t + dt/2) = v(t) + a(t) * dt/2
         velocities += 0.5 * self.dt * forces / masses
         atoms.set_velocities(velocities)
-
-        # Update positions: r(t + dt) = r(t) + v(t + dt/2) * dt
+        positions = atoms.get_positions()
         positions += self.dt * velocities
         atoms.set_positions(positions)
 
-        # Calculate new forces at new positions
+        # compute2: second half velocity Verlet
         forces = atoms.get_forces()
-
-        # Second half of velocity Verlet: v(t + dt) = v(t + dt/2) + a(t + dt) * dt/2
         velocities = atoms.get_velocities()
         velocities += 0.5 * self.dt * forces / masses
         atoms.set_velocities(velocities)
 
-        # Apply thermostat (BDP velocity rescaling)
+        # compute2: thermostat then barostat
         self._apply_thermostat()
-
-        # Apply barostat (SCR)
         self._apply_barostat()
 
-    def run(self, steps: int):
-        """
-        Run MD for a number of steps.
-
-        Parameters
-        ----------
-        steps : int
-            Number of MD steps to perform.
-        """
+    def run(self, steps):
         for _ in range(steps):
             self.step()
             self.nsteps += 1
             self.call_observers()
 
-    def get_temperature(self) -> float:
-        """Get current instantaneous temperature in Kelvin."""
+    def get_temperature(self):
         return self.atoms.get_temperature()
 
-    def get_pressure(self) -> float:
-        """Get current instantaneous pressure in GPa."""
-        p_diag = self.get_pressure_diagonal()
-        return np.mean(p_diag) / units.GPa
+    def get_pressure(self):
+        """Instantaneous pressure in GPa."""
+        s = self._get_stress_voigt()
+        return (s[0] + s[1] + s[2]) / 3.0 / units.GPa
 
-    def get_volume(self) -> float:
-        """Get current volume in Å³."""
+    def get_volume(self):
         return self.atoms.get_volume()
 
+
+# ============================================================
+# Hugoniot helper
+# ============================================================
+
+def _compute_hugoniot(atoms, e0, p0, v0, pmode_hugo):
+    """
+    Compute Hugoniot deviation in temperature units (K).
+    dhugo = [0.5*(P0+P)*(V0-V) + E0 - E] / (3N * kB)
+    Positive => system needs to heat up.
+    """
+    stress = -atoms.get_stress(voigt=False)  # real stress tensor
+    if pmode_hugo == 'iso':
+        p_current = stress.trace() / 3.0
+    elif pmode_hugo == 'x':
+        p_current = stress[0, 0]
+    elif pmode_hugo == 'y':
+        p_current = stress[1, 1]
+    elif pmode_hugo == 'z':
+        p_current = stress[2, 2]
+    else:
+        p_current = stress.trace() / 3.0
+
+    v_current = atoms.get_volume()
+    e_current = atoms.get_total_energy()
+    tdof = 3 * len(atoms)
+
+    dhugo = (0.5 * (p0 + p_current) * (v0 - v_current)
+             + e0 - e_current)
+    return dhugo / (tdof * K_B)
+
+
+# ============================================================
+# NPT_SCR_Hugo: SCR barostat + BDP thermostat + Hugoniot
+# ============================================================
 
 class NPT_SCR_Hugo(NPT_SCR):
     """
-    NPT_SCR with Hugoniot thermostat for shock wave simulations.
-
-    Inherits SCR barostat from NPT_SCR, but dynamically updates
-    target temperature to satisfy the Hugoniot relation:
-    E - E0 = 0.5 * (P + P0) * (V0 - V)
-    """
-
-    def __init__(
-        self,
-        atoms: Atoms,
-        timestep: float,
-        pressure: float,
-        e0: Optional[float] = None,
-        p0: Optional[float] = None,
-        v0: Optional[float] = None,
-        temperature_coupling: float = 100.0,
-        pressure_coupling: float = 1e-4,
-        pmode: str = 'iso',
-        **kwargs
-    ):
-        # Store pmode for Hugoniot calculation
-        self._pmode_hugo = pmode.lower()
-
-        # Set reference state (before parent init to use in temp calculation)
-        self.v0 = v0 if v0 is not None else atoms.get_volume()
-        self.e0 = e0 if e0 is not None else atoms.get_total_energy()
-
-        if p0 is None:
-            # Get pressure from stress tensor (note: stress has opposite sign)
-            self.p0 = -atoms.get_stress(voigt=False).trace() / 3
-        else:
-            self.p0 = p0 * units.GPa
-
-        self.tdof = 3 * len(atoms)
-        self.dhugo = 0.0
-
-        # Initialize parent class with initial temperature
-        t_init = max(300.0, self._compute_hugoniot_temp(atoms))
-        super().__init__(
-            atoms=atoms,
-            timestep=timestep,
-            temperature=t_init,
-            pressure=pressure,
-            temperature_coupling=temperature_coupling,
-            pressure_coupling=pressure_coupling,
-            pmode='iso' if pmode in ['iso', 'x', 'y', 'z'] else pmode,
-            **kwargs
-        )
-
-        self.print_init_parameters()
-
-    def print_init_parameters(self):
-        """Print initial parameters for debugging."""
-        print(f"NPT_SCR_Hugo: e0={self.e0:.4f} eV, v0={self.v0:.2f} A^3, "
-              f"p0={self.p0/units.GPa:.4f} GPa, pmode={self._pmode_hugo}")
-
-    @property
-    def volume(self):
-        return self.atoms.get_volume()
-
-    def _compute_hugoniot_temp(self, atoms: Atoms) -> float:
-        """Compute target temperature from Hugoniot relation."""
-        # Get current pressure based on pmode
-        stress = -atoms.get_stress(voigt=False)
-        if self._pmode_hugo == 'iso':
-            p_current = stress.trace() / 3
-        elif self._pmode_hugo == 'x':
-            p_current = stress[0, 0]
-        elif self._pmode_hugo == 'y':
-            p_current = stress[1, 1]
-        elif self._pmode_hugo == 'z':
-            p_current = stress[2, 2]
-        else:
-            p_current = stress.trace() / 3
-
-        # Hugoniot: dE = 0.5*(P0+P)*(V0-V)
-        # dhugo > 0 means we need to heat up
-        v_current = atoms.get_volume()
-        e_current = atoms.get_total_energy()
-
-        dhugo = (0.5 * (self.p0 + p_current) * (self.v0 - v_current)
-                 + self.e0 - e_current)
-        self.dhugo = dhugo / (self.tdof * K_B)  # Convert to temperature
-
-        return atoms.get_temperature() + self.dhugo
-
-    def _apply_thermostat(self):
-        """Apply thermostat with dynamically updated Hugoniot temperature."""
-        self.temp_target = max(300.0, self._compute_hugoniot_temp(self.atoms))
-        super()._apply_thermostat()
-
-    def get_hugoniot_deviation(self) -> float:
-        """Get current Hugoniot deviation in temperature units."""
-        return self.dhugo
-
-
-class NPH_SCR(NPT_SCR):
-    """
-    NPH (constant enthalpy, constant pressure) using SCR barostat.
-
-    This is NPT without thermostat - temperature evolves freely while
-    pressure is controlled by the SCR barostat.
-
-    Useful for:
-    - Studying adiabatic processes
-    - Shock wave simulations without artificial temperature control
-    - Cases where you want pressure control but natural energy conservation
-    """
-
-    def __init__(
-        self,
-        atoms: Atoms,
-        timestep: float,
-        pressure: Union[float, List[float]],
-        pressure_coupling: Union[float, List[float]] = 1e-4,
-        pmode: str = 'iso',
-        deform: Optional[List[float]] = None,
-        seed: Optional[int] = None,
-        **kwargs
-    ):
-        # Initialize parent with dummy temperature (won't be used)
-        super().__init__(
-            atoms=atoms,
-            timestep=timestep,
-            temperature=300.0,  # Not used, just for initialization
-            pressure=pressure,
-            temperature_coupling=100.0,  # Not used
-            pressure_coupling=pressure_coupling,
-            pmode=pmode,
-            deform=deform,
-            seed=seed,
-            **kwargs
-        )
-
-    def _apply_thermostat(self):
-        """No thermostat in NPH - temperature evolves freely."""
-        pass
-
-    def step(self):
-        """Perform one MD step using velocity Verlet with SCR barostat only."""
-        atoms = self.atoms
-
-        # Get current state
-        masses = atoms.get_masses()[:, np.newaxis]
-        positions = atoms.get_positions()
-        velocities = atoms.get_velocities()
-        forces = atoms.get_forces()
-
-        # First half of velocity Verlet
-        velocities += 0.5 * self.dt * forces / masses
-        atoms.set_velocities(velocities)
-
-        # Update positions
-        positions += self.dt * velocities
-        atoms.set_positions(positions)
-
-        # Calculate new forces
-        forces = atoms.get_forces()
-
-        # Second half of velocity Verlet
-        velocities = atoms.get_velocities()
-        velocities += 0.5 * self.dt * forces / masses
-        atoms.set_velocities(velocities)
-
-        # Apply barostat only (no thermostat)
-        self._apply_barostat()
-
-
-class NPH_SCR_Hugo(NPH_SCR):
-    """
-    NPH with Hugoniot constraint using SCR barostat.
-
-    This combines SCR barostat with Hugoniot energy constraint.
-    Instead of controlling temperature, it monitors the Hugoniot deviation
-    and can optionally apply velocity scaling to stay on the Hugoniot curve.
-
-    The Hugoniot relation: E - E0 = 0.5 * (P + P0) * (V0 - V)
-    """
-
-    def __init__(
-        self,
-        atoms: Atoms,
-        timestep: float,
-        pressure: float,
-        e0: Optional[float] = None,
-        p0: Optional[float] = None,
-        v0: Optional[float] = None,
-        pressure_coupling: float = 1e-4,
-        pmode: str = 'iso',
-        hugoniot_correction: bool = True,
-        **kwargs
-    ):
-        self._pmode_hugo = pmode.lower()
-        self.hugoniot_correction = hugoniot_correction
-
-        # Set reference state
-        self.v0 = v0 if v0 is not None else atoms.get_volume()
-        self.e0 = e0 if e0 is not None else atoms.get_total_energy()
-
-        if p0 is None:
-            self.p0 = -atoms.get_stress(voigt=False).trace() / 3
-        else:
-            self.p0 = p0 * units.GPa
-
-        self.tdof = 3 * len(atoms)
-        self.dhugo = 0.0
-
-        super().__init__(
-            atoms=atoms,
-            timestep=timestep,
-            pressure=pressure,
-            pressure_coupling=pressure_coupling,
-            pmode='iso' if pmode in ['iso', 'x', 'y', 'z'] else pmode,
-            **kwargs
-        )
-
-        self.print_init_parameters()
-
-    def print_init_parameters(self):
-        """Print initial parameters."""
-        print(f"NPH_SCR_Hugo: e0={self.e0:.4f} eV, v0={self.v0:.2f} A^3, "
-              f"p0={self.p0/units.GPa:.4f} GPa, pmode={self._pmode_hugo}")
-
-    @property
-    def volume(self):
-        return self.atoms.get_volume()
-
-    def compute_hugoniot(self) -> float:
-        """
-        Compute Hugoniot deviation.
-
-        Returns dhugo in temperature units (K).
-        Positive means system needs to heat up to reach Hugoniot.
-        """
-        stress = -self.atoms.get_stress(voigt=False)
-        if self._pmode_hugo == 'iso':
-            p_current = stress.trace() / 3
-        elif self._pmode_hugo == 'x':
-            p_current = stress[0, 0]
-        elif self._pmode_hugo == 'y':
-            p_current = stress[1, 1]
-        elif self._pmode_hugo == 'z':
-            p_current = stress[2, 2]
-        else:
-            p_current = stress.trace() / 3
-
-        v_current = self.atoms.get_volume()
-        e_current = self.atoms.get_total_energy()
-
-        # Hugoniot: E - E0 = 0.5*(P0+P)*(V0-V)
-        dhugo = (0.5 * (self.p0 + p_current) * (self.v0 - v_current)
-                 + self.e0 - e_current)
-        self.dhugo = dhugo / (self.tdof * K_B)
-
-        return self.dhugo
-
-    def step(self):
-        """Perform one MD step with optional Hugoniot correction."""
-        # Standard NPH step
-        super().step()
-
-        # Compute Hugoniot deviation
-        self.compute_hugoniot()
-
-        # Optional: apply velocity scaling to stay on Hugoniot
-        if self.hugoniot_correction and abs(self.dhugo) > 1.0:
-            # Scale velocities to correct energy
-            ke_current = self.atoms.get_kinetic_energy()
-            ke_target = ke_current + self.dhugo * self.tdof * K_B * 0.5
-            if ke_current > 0 and ke_target > 0:
-                scale = np.sqrt(ke_target / ke_current)
-                # Apply gentle correction (max 1% per step)
-                scale = np.clip(scale, 0.99, 1.01)
-                velocities = self.atoms.get_velocities()
-                self.atoms.set_velocities(velocities * scale)
-
-    def get_hugoniot_deviation(self) -> float:
-        """Get current Hugoniot deviation in temperature units."""
-        return self.dhugo
-
-
-# Convenience function for creating NPT_SCR dynamics
-def create_npt_scr(
-    atoms: Atoms,
-    timestep: float = 1.0,  # fs
-    temperature: float = 300.0,  # K
-    pressure: float = 0.0,  # GPa
-    temperature_coupling: float = 100.0,
-    pressure_coupling: float = 1e-4,
-    pmode: str = 'iso',
-    **kwargs
-) -> NPT_SCR:
-    """
-    Create an NPT_SCR molecular dynamics object.
+    NPT_SCR with Hugoniot constraint.
+    Target temperature is dynamically updated from the Hugoniot relation.
 
     Parameters
     ----------
     atoms : Atoms
-        ASE Atoms object.
-    timestep : float
-        Time step in fs. Default: 1.0 fs.
-    temperature : float
-        Target temperature in K. Default: 300 K.
-    pressure : float
-        Target pressure in GPa. Default: 0 GPa.
-    temperature_coupling : float
-        Thermostat coupling in units of timestep. Default: 100.
-    pressure_coupling : float
-        Barostat coupling parameter. Default: 1e-4.
-    pmode : str
-        Pressure mode: 'iso', 'ortho', or 'tri'. Default: 'iso'.
-    **kwargs
-        Additional arguments passed to NPT_SCR.
-
-    Returns
-    -------
-    NPT_SCR
-        Configured molecular dynamics object.
+    timestep : float, ASE 时间单位 (fs * units.fs)
+    pressure : float, 目标压力 (GPa)
+    e0 : float, Hugoniot 参考能量 (eV)，默认取当前总能量
+    p0 : float, Hugoniot 参考压力 (GPa)，默认取当前压力
+    v0 : float, Hugoniot 参考体积 (Å³)，默认取当前体积
+    tau_t : float, BDP 恒温器弛豫时间，单位 timestep（默认 100，与 GPUMD 一致）
+    tau_p : float, SCR 气压计弛豫时间，单位 timestep（默认 2000，与 GPUMD 一致）
+    elastic_modulus : float, 体积模量 (GPa)，默认 15（含能材料典型值，一般不需要改）
+    pmode : str, 压力模式: 'iso'(各向同性) / 'x'/'y'/'z'(单轴)
     """
-    from ase import units as ase_units
 
+    def __init__(self, atoms, timestep, pressure,
+                 e0=None, p0=None, v0=None,
+                 tau_t=100.0,                              # 单位 timestep
+                 tau_p=2000.0,                             # 单位 timestep
+                 elastic_modulus=DEFAULT_BULK_MODULUS,      # GPa
+                 pmode='iso', **kwargs):
+        self._pmode_hugo = pmode.lower()
+
+        self.v0 = v0 if v0 is not None else atoms.get_volume()
+        self.e0 = e0 if e0 is not None else atoms.get_total_energy()
+        if p0 is None:
+            self.p0 = -atoms.get_stress(voigt=False).trace() / 3.0
+        else:
+            self.p0 = p0 * units.GPa
+        self.tdof = 3 * len(atoms)
+        self.dhugo = 0.0
+
+        t_init = max(300.0, atoms.get_temperature()
+                     + _compute_hugoniot(atoms, self.e0, self.p0, self.v0,
+                                         self._pmode_hugo))
+
+        # For pmode x/y/z, barostat still uses iso mode
+        baro_pmode = 'iso' if pmode in ('iso', 'x', 'y', 'z') else pmode
+        super().__init__(
+            atoms=atoms, timestep=timestep, temperature=t_init,
+            pressure=pressure, tau_t=tau_t, tau_p=tau_p,
+            elastic_modulus=elastic_modulus, pmode=baro_pmode,
+            **kwargs)
+
+        print(f"NPT_SCR_Hugo: e0={self.e0:.4f} eV, v0={self.v0:.2f} A^3, "
+              f"p0={self.p0 / units.GPa:.4f} GPa, pmode={self._pmode_hugo}, "
+              f"tau_t={tau_t}, tau_p={tau_p}, C={elastic_modulus} GPa")
+
+    def _apply_thermostat(self):
+        """Update target temp from Hugoniot, then apply BDP."""
+        self.dhugo = _compute_hugoniot(
+            self.atoms, self.e0, self.p0, self.v0, self._pmode_hugo)
+        self.temp_target = max(300.0, self.atoms.get_temperature() + self.dhugo)
+        super()._apply_thermostat()
+
+    def get_hugoniot_deviation(self):
+        return self.dhugo
+
+
+# ============================================================
+# NPH_SCR: SCR barostat only (no thermostat)
+# ============================================================
+
+class NPH_SCR(NPT_SCR):
+    """NPH using SCR barostat. Temperature evolves freely."""
+
+    def __init__(self, atoms, timestep, pressure,
+                 tau_p=2000.0, elastic_modulus=DEFAULT_BULK_MODULUS,
+                 pmode='iso', deform=None, seed=None, **kwargs):
+        super().__init__(
+            atoms=atoms, timestep=timestep, temperature=300.0,
+            pressure=pressure, tau_t=100.0, tau_p=tau_p,
+            elastic_modulus=elastic_modulus, pmode=pmode,
+            deform=deform, seed=seed, **kwargs)
+
+    def _apply_thermostat(self):
+        """No thermostat in NPH."""
+        pass
+
+
+# ============================================================
+# NPH_SCR_Hugo: SCR barostat + Hugoniot velocity correction
+# ============================================================
+
+class NPH_SCR_Hugo(NPH_SCR):
+    """
+    NPH with Hugoniot constraint using SCR barostat.
+    Monitors Hugoniot deviation and applies gentle velocity
+    scaling to stay on the Hugoniot curve.
+    """
+
+    def __init__(self, atoms, timestep, pressure,
+                 e0=None, p0=None, v0=None,
+                 tau_p=2000.0,                             # 单位 timestep
+                 elastic_modulus=DEFAULT_BULK_MODULUS,      # GPa
+                 pmode='iso',
+                 hugoniot_correction=True, **kwargs):
+        self._pmode_hugo = pmode.lower()
+        self.hugoniot_correction = hugoniot_correction
+
+        self.v0 = v0 if v0 is not None else atoms.get_volume()
+        self.e0 = e0 if e0 is not None else atoms.get_total_energy()
+        if p0 is None:
+            self.p0 = -atoms.get_stress(voigt=False).trace() / 3.0
+        else:
+            self.p0 = p0 * units.GPa
+        self.tdof = 3 * len(atoms)
+        self.dhugo = 0.0
+
+        baro_pmode = 'iso' if pmode in ('iso', 'x', 'y', 'z') else pmode
+        super().__init__(
+            atoms=atoms, timestep=timestep, pressure=pressure,
+            tau_p=tau_p, elastic_modulus=elastic_modulus,
+            pmode=baro_pmode, **kwargs)
+
+        print(f"NPH_SCR_Hugo: e0={self.e0:.4f} eV, v0={self.v0:.2f} A^3, "
+              f"p0={self.p0 / units.GPa:.4f} GPa, pmode={self._pmode_hugo}")
+
+    def step(self):
+        """NPH step + Hugoniot monitoring and correction."""
+        super().step()
+
+        self.dhugo = _compute_hugoniot(
+            self.atoms, self.e0, self.p0, self.v0, self._pmode_hugo)
+
+        if self.hugoniot_correction and abs(self.dhugo) > 1.0:
+            ke = self.atoms.get_kinetic_energy()
+            ke_target = ke + self.dhugo * self.tdof * K_B * 0.5
+            if ke > 0 and ke_target > 0:
+                scale = np.sqrt(ke_target / ke)
+                scale = np.clip(scale, 0.99, 1.01)
+                self.atoms.set_velocities(self.atoms.get_velocities() * scale)
+
+    def get_hugoniot_deviation(self):
+        return self.dhugo
+
+
+# ============================================================
+# Convenience factory
+# ============================================================
+
+def create_npt_scr(atoms, timestep=1.0, temperature=300.0, pressure=0.0,
+                   tau_t=100.0, tau_p=2000.0,
+                   elastic_modulus=DEFAULT_BULK_MODULUS,
+                   pmode='iso', **kwargs):
+    """
+    Create NPT_SCR dynamics.
+
+    Parameters
+    ----------
+    timestep : float, 时间步长 (fs)
+    temperature : float, 目标温度 (K)
+    pressure : float, 目标压力 (GPa)
+    tau_t : float, BDP 恒温器弛豫时间，单位 timestep（默认 100，与 GPUMD 一致）
+    tau_p : float, SCR 气压计弛豫时间，单位 timestep（默认 2000，与 GPUMD 一致）
+    elastic_modulus : float, 体积模量 (GPa)，默认 15（含能材料典型值）
+    pmode : str, 压力模式 iso/ortho/tri
+    """
     return NPT_SCR(
         atoms=atoms,
-        timestep=timestep * ase_units.fs,
+        timestep=timestep * units.fs,
         temperature=temperature,
         pressure=pressure,
-        temperature_coupling=temperature_coupling,
-        pressure_coupling=pressure_coupling,
+        tau_t=tau_t,
+        tau_p=tau_p,
+        elastic_modulus=elastic_modulus,
         pmode=pmode,
-        **kwargs
-    )
+        **kwargs)
+

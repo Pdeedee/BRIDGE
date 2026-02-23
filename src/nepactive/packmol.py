@@ -54,8 +54,10 @@ def make_structure(molecules:dict,name:str,density:float=1.8e3):
     with open("packmol.inp",'w') as file:
         file.write(text)
 
-    print(f"current_dir:{os.getcwd()}")
-    os.system("packmol < packmol.inp")
+    dlog.info(f"running packmol in {os.getcwd()}")
+    with open("packmol.log", "w") as plog:
+        subprocess.run("packmol < packmol.inp", shell=True, stdout=plog, stderr=plog)
+    dlog.info("packmol finished, see packmol.log for details")
 
     # 读取生成的 packmol.pdb 文件
     atoms = read("packmol.pdb")

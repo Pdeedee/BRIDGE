@@ -464,20 +464,28 @@ def main(trajectory_file, output_dir="unique_molecules", index=":", mult_factor=
     
     return unique_molecules, chem_df
 
+def cli():
+    """命令行入口：识别结构/轨迹文件中的分子组成"""
+    import argparse
+    parser = argparse.ArgumentParser(
+        description="识别结构或轨迹文件中的分子组成")
+    parser.add_argument("structure", help="输入结构/轨迹文件 (POSCAR/xyz/extxyz等)")
+    parser.add_argument("-o", "--output", default="unique_molecules",
+                        help="输出目录 (默认: unique_molecules)")
+    parser.add_argument("--index", default=":",
+                        help="轨迹帧索引，如 ':' 全部, '-1' 最后一帧, '0:10' 前10帧 (默认: ':')")
+    parser.add_argument("--mult", type=float, default=0.7,
+                        help="成键截断半径系数 (默认: 0.7)")
+    parser.add_argument("--debug", action="store_true",
+                        help="输出调试信息")
+    parser.add_argument("--csv", default=None,
+                        help="保存分子计数 CSV 的路径 (默认: <output>/molecule_counts.csv)")
+    args = parser.parse_args()
+
+    main(args.structure, output_dir=args.output, index=args.index,
+         mult_factor=args.mult, debug=args.debug)
+
+
 # 示例：调用主函数
 if __name__ == "__main__":
-    trajectory_file = "POSCAR"  # 替换为你的轨迹文件路径
-    output_dir = "unique_molecules"  # 输出目录
-    index = ":"  # 轨迹索引，对于单帧文件可以设置为":"
-    
-    # 增加截断半径系数，提高成键检测的敏感性
-    mult_factor = 0.7  # 默认是0.7，增加到0.85可能会捕获更多的键
-    
-    # 启用调试输出
-    debug = True
-    
-    # 对于单帧文件，可以使用
-    # main(trajectory_file, output_dir, index=":", mult_factor=0.85, debug=True)
-    
-    # 对于多帧文件，可以使用指定索引
-    main(trajectory_file, output_dir, index=index, mult_factor=mult_factor, debug=debug)
+    cli()
