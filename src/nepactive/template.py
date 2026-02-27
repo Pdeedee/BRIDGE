@@ -146,7 +146,7 @@ nvt_pytemplate = """
 from ase.io import  read,write
 from ase import Atoms,units
 from nepactive.logger import MDLogger
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
 from ase.io.trajectory import Trajectory
 import numpy as np
 from ase.optimize import LBFGS
@@ -167,6 +167,8 @@ steps = {steps}
 write("opt.pdb",atoms)
 temperature_K = {temperature}
 MaxwellBoltzmannDistribution(atoms,temperature_K=temperature_K)
+Stationary(atoms)
+ZeroRotation(atoms)
 traj = Trajectory('out.traj', 'w', atoms)
 # pfactor= 100 #120
 pressure = 0
@@ -184,7 +186,7 @@ npt_pytemplate = """
 from ase.io import  read,write
 from ase import Atoms,units
 from nepactive.logger import MDLogger
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
 from ase.io.trajectory import Trajectory
 import numpy as np
 from ase.optimize import LBFGS
@@ -205,6 +207,8 @@ steps = {steps}
 write("opt.pdb",atoms)
 temperature_K = {temperature}
 MaxwellBoltzmannDistribution(atoms,temperature_K=temperature_K)
+Stationary(atoms)
+ZeroRotation(atoms)
 traj = Trajectory('out.traj', 'w', atoms)
 # pfactor= 100 #120
 pressure = {pressure} * units.GPa
@@ -255,7 +259,7 @@ nphugo_mttk_pytemplate = """
 from ase.io import  read,write
 from nepactive.logger import MDLogger
 from ase import units
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
 from ase.io.trajectory import Trajectory
 import numpy as np
 from ase.optimize import LBFGS
@@ -276,6 +280,8 @@ steps = {steps}
 write("opt.pdb",atoms)
 temperature_K = 300
 MaxwellBoltzmannDistribution(atoms,temperature_K=temperature_K)
+Stationary(atoms)
+ZeroRotation(atoms)
 traj = Trajectory('out.traj', 'w', atoms)
 # pfactor= 100 #120
 timestep = 0.2 * units.fs
@@ -294,7 +300,7 @@ nphugo_mttk_pytemplate_shock = """
 from ase.io import  read,write
 from nepactive.logger import MDLogger
 from ase import units
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
 from ase.io.trajectory import Trajectory
 import numpy as np
 from ase.optimize import LBFGS
@@ -315,6 +321,8 @@ steps = {steps}
 write("opt.pdb",atoms)
 temperature_K = 300
 MaxwellBoltzmannDistribution(atoms,temperature_K=temperature_K)
+Stationary(atoms)
+ZeroRotation(atoms)
 traj = Trajectory('out.traj', 'w', atoms)
 # pfactor= 100 #120
 timestep = 0.2 * units.fs
@@ -342,7 +350,7 @@ nphugo_scr_pytemplate = """
 from ase.io import read, write
 from nepactive.logger import MDLogger
 from ase import units
-from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
 from ase.io.trajectory import Trajectory
 import numpy as np
 from ase.optimize import LBFGS
@@ -359,6 +367,8 @@ steps = {steps}
 write("opt.pdb", atoms)
 temperature_K = 300
 MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K)
+Stationary(atoms)
+ZeroRotation(atoms)
 traj = Trajectory('out.traj', 'w', atoms)
 timestep = {time_step} * units.fs
 e0 = {e0}

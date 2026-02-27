@@ -200,7 +200,7 @@ class MTTK(MolecularDynamics):
         self.first_half()
         self._center_of_velocities()
         self.second_half()
-        self._center_of_velocities
+        self._center_of_velocities()
         # print(f"dhugo:{self.dhugo}")
         # print(f"phydro:{self.p_hydro/units.GPa}")
 
@@ -622,5 +622,5 @@ class NPHugo(MTTK):
         self.first_half()
         self._center_of_velocities()
         self.second_half()
-        self._center_of_velocities
+        self._center_of_velocities()
         print(f"dhugo:{self.dhugo}")

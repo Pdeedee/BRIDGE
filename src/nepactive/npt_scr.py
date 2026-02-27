@@ -409,6 +409,12 @@ class NPT_SCR(MolecularDynamics):
         forces = atoms.get_forces()
         velocities = atoms.get_velocities()
         velocities += 0.5 * self.dt * forces / masses
+
+        # 移除质心速度
+        total_mass = masses.sum()
+        vcm = (masses * velocities).sum(axis=0) / total_mass
+        velocities -= vcm
+
         atoms.set_velocities(velocities)
 
         # compute2: thermostat then barostat

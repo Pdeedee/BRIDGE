@@ -55,8 +55,8 @@ init:                          # 初始产物结构生成设置
   struc_num: 1                 # 初始结构数量
   pressure: [20,40,60,80]      # 初始数据集的压力列表，单位为GPa
   temperature: [3000]          # 初始数据集的温度列表，单位为K
-  steps: 40000                 # 初始数据集的运行步数
-  time_step: 0.2               # 时间步长，单位为fs
+  steps: 100000                 # 初始数据集的运行步数
+  time_step: 0.4               # 时间步长，单位为fs
   dump_freq: 10                # dump频率，单位为步数
   # tau_t: 100                 # BDP 恒温器弛豫时间 (默认 100)
   # tau_p: 2000                # SCR 气压计弛豫时间 (默认 2000)

@@ -111,8 +111,10 @@ class BaseRun:
             task_dir = os.path.join(work_dir, f"task.{ii:03d}")
             os.makedirs(task_dir, exist_ok=True)
             os.chdir(task_dir)
+            # 优先使用 POSCAR，兼容旧版 stable.pdb
+            struc_file = "../structure/POSCAR" if os.path.exists("../structure/POSCAR") else "../structure/stable.pdb"
             py_file = nphugo_scr_pytemplate.format(
-                structure="../structure/stable.pdb", e0=self.energy,
+                structure=struc_file, e0=self.energy,
                 p0=p0, v0=self.r_v, dump_freq=dump_freq,
                 pressure=self.pressure_list[ii], steps=steps,
                 time_step=time_step, tau_t=tau_t, tau_p=tau_p,
@@ -208,8 +210,12 @@ class InitRun(BaseRun):
             struc_dirs.append(struc_dir)
             os.chdir(struc_dir)
             atoms = read(f"{self.work_dir}/POSCAR")
+            elements = atoms.get_chemical_symbols()
+            sorted_indices = sorted(range(len(elements)), key=lambda x: elements[x])
+            sorted_atoms = atoms[sorted_indices]
             os.makedirs("structure", exist_ok=True)
-            write("structure/stable.pdb", atoms)
+            write("structure/POSCAR", sorted_atoms)
+            write("structure/stable.pdb", sorted_atoms)
             self.make_preparations()
 
     def make_preparations(self):
@@ -217,13 +223,25 @@ class InitRun(BaseRun):
         max_try = 0
         struc_dir = os.getcwd()
         error = 1
-        # 如果已有 POSCAR 但没有 stable.pdb，直接复制
-        if os.path.exists("structure/POSCAR") and not os.path.exists("structure/stable.pdb"):
-            from ase.io import read as ase_read, write as ase_write
-            atoms = ase_read("structure/POSCAR")
-            ase_write("structure/stable.pdb", atoms)
-            dlog.info("Converted structure/POSCAR to structure/stable.pdb")
-        if not os.path.exists("structure/stable.pdb"):
+        # 互相补全：确保 POSCAR 和 stable.pdb 都存在
+        has_poscar = os.path.exists("structure/POSCAR")
+        has_pdb = os.path.exists("structure/stable.pdb")
+        if has_poscar and not has_pdb:
+            atoms = read("structure/POSCAR")
+            elements = atoms.get_chemical_symbols()
+            sorted_indices = sorted(range(len(elements)), key=lambda x: elements[x])
+            sorted_atoms = atoms[sorted_indices]
+            write("structure/POSCAR", sorted_atoms)
+            write("structure/stable.pdb", sorted_atoms)
+            dlog.info("Generated structure/stable.pdb from POSCAR (sorted by element)")
+        elif has_pdb and not has_poscar:
+            atoms = read("structure/stable.pdb")
+            elements = atoms.get_chemical_symbols()
+            sorted_indices = sorted(range(len(elements)), key=lambda x: elements[x])
+            sorted_atoms = atoms[sorted_indices]
+            write("structure/POSCAR", sorted_atoms)
+            dlog.info("Generated structure/POSCAR from stable.pdb (sorted by element)")
+        if not (has_poscar or has_pdb):
             while (not new) or (error != 0):
                 molecule_dict, error = self.make_molecule_dict()
                 if molecule_dict not in self.molecule_dicts:
@@ -244,8 +262,15 @@ class InitRun(BaseRun):
                 os.system(f"cp {source_file}/*pdb .")
                 self.make_structure(molecule_dict, name="stable.pdb")
                 dlog.info(f"make structure for {molecule_dict}")
+            if not os.path.isfile("POSCAR"):
+                atoms = read("stable.pdb")
+                elements = atoms.get_chemical_symbols()
+                sorted_indices = sorted(range(len(elements)), key=lambda x: elements[x])
+                sorted_atoms = atoms[sorted_indices]
+                write("POSCAR", sorted_atoms)
+                dlog.info("saved sorted POSCAR")
         os.chdir(struc_dir)
-        if not os.path.exists("task.000"):
+        if not os.path.exists("task.000/ensemble.py"):
             self.make_pytasks()
 
     def make_structure(self, molecule_dict: dict, name):
@@ -325,7 +350,11 @@ class ShockRun(BaseRun):
             os.chdir(struc_dir)
             os.makedirs("structure", exist_ok=True)
             atoms = read(struc)
-            write("structure/stable.pdb", atoms)
+            elements = atoms.get_chemical_symbols()
+            sorted_indices = sorted(range(len(elements)), key=lambda x: elements[x])
+            sorted_atoms = atoms[sorted_indices]
+            write("structure/POSCAR", sorted_atoms)
+            write("structure/stable.pdb", sorted_atoms)
             if not os.path.exists("task.000/ensemble.py"):
                 self.make_pytasks()
 
@@ -367,7 +396,7 @@ class ShockRun(BaseRun):
             molecule_num = molecule_data.sum(axis=1).to_numpy()
             molecule_density = molecule_num / thermo_new[:, 3]
             molecule_data.to_csv("molecule_data.csv")
-            data = np.column_stack((shortest_d, molecule_num, molecule_density))
+            data = np.column_stack((shortest_distances, molecule_num, molecule_density))
             np.savetxt('frame_properties.txt', data, fmt='%12.2f')
             write_extxyz("final.xyz", atoms_list[-1])
 

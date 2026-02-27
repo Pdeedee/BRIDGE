@@ -261,7 +261,11 @@ class Nepactive(object):
             os.makedirs("structure",exist_ok=True)
             dlog.info(f"Processing additional structure file: {struct_file}")
             atoms = read(f"{self.structure_prefix}/{struct_file}")
-            write("structure/POSCAR",atoms)
+            elements = atoms.get_chemical_symbols()
+            sorted_indices = sorted(range(len(elements)), key=lambda x: elements[x])
+            sorted_atoms = atoms[sorted_indices]
+            write("structure/POSCAR", sorted_atoms)
+            write("structure/stable.pdb", sorted_atoms)
             init_run.make_preparations()
 
         if True:
@@ -271,8 +275,12 @@ class Nepactive(object):
             # struc_dirs.append(struc_dir)
             os.chdir(struc_dir)
             atoms = read(f"{self.work_dir}/POSCAR")
+            elements = atoms.get_chemical_symbols()
+            sorted_indices = sorted(range(len(elements)), key=lambda x: elements[x])
+            sorted_atoms = atoms[sorted_indices]
             os.makedirs("structure",exist_ok=True)
-            write(f"structure/POSCAR",atoms)
+            write("structure/POSCAR", sorted_atoms)
+            write("structure/stable.pdb", sorted_atoms)
             init_run.make_preparations()
 
         ase_ensemble_files = self.idata.get("ini_ase_ensemble_files")
@@ -480,10 +488,9 @@ class Nepactive(object):
         if shock_data is None:
             raise ValueError("shock data is None, please check your in.yaml")
 
-        shock_data["pot"] = shock_data.get("pot", "nep")
-        if shock_data["pot"] == "nep":
-            if not shock_data.get("nep", None):
-                shock_data["nep"] = os.path.join(os.path.abspath(os.getcwd()), "nep.txt")
+        shock_data["pot"] = "nep"
+        if not shock_data.get("nep", None):
+            shock_data["nep"] = os.path.join(os.path.abspath(os.getcwd()), "nep.txt")
         struture_files = os.path.join(os.path.abspath(os.getcwd()), "POSCAR")
         shock_data["structure_files"] = [struture_files]
 
@@ -521,7 +528,7 @@ class Nepactive(object):
         assert shock_data is not None, "shock data is None"
         nep_file = os.path.join(self.iter_dir, "00.nep/task.000000/nep.txt")
         shock_data["nep"] = nep_file
-        shock_data["pot"] = shock_data.get("pot", "nep")
+        shock_data["pot"] = "nep"
         original_make = shock_data.get("original_make", False)
 
         shock_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
