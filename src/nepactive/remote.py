@@ -379,8 +379,11 @@ class Remotetask:
             err_str = stderr.read().decode("utf-8")
             if "Socket timed out" in err_str or "Unable to contact slurm controller" in err_str or "Unexpected message received" in err_str:
                 raise RetrySignal(f"submit error for {task_name}: {err_str}")
-            if "Job violates accounting/QOS policy" in err_str or "Slurm temporarily unable to accept job" in err_str:
+            if "Slurm temporarily unable to accept job" in err_str:
+                dlog.warning(f"submit deferred for {task_name}: {err_str}")
                 return ""
+            if "Job violates accounting/QOS policy" in err_str:
+                raise RuntimeError(f"sbatch rejected by QOS/accounting policy for {task_name}: {err_str}")
             raise RuntimeError(f"sbatch failed for {task_name}: {err_str}")
         job_id = stdout.readlines()[0].split()[-1].strip()
         dlog.info(f"{task_name} submitted as job {job_id}")
@@ -481,6 +484,10 @@ class Remotetask:
                     wd, tn = key
                     self._upload_task(wd, tn)
                     job_id = self._submit_task(wd, tn)
+                    if not job_id:
+                        # 暂时无法提交时先回队列，避免 active 中出现空 job_id 导致卡死
+                        queue.append(key)
+                        break
                     active[key] = job_id
 
             _fill_queue()
@@ -489,7 +496,11 @@ class Remotetask:
             )
 
             # 轮询该目录的 task
-            while active:
+            while active or queue:
+                if not active:
+                    time.sleep(30)
+                    _fill_queue()
+                    continue
                 time.sleep(30)
                 done_keys = []
                 statuses: dict = {}

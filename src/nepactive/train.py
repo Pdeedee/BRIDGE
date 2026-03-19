@@ -481,15 +481,18 @@ class Nepactive(object):
 
     def shock(self):
         work_dir = os.getcwd()
-        shock_data = self.idata.get("shock", None)
+        shock_raw = self.idata.get("shock", None)
+        if shock_raw is None:
+            raise ValueError("shock data is None, please check your in.yaml")
+        shock_data = copy.deepcopy(shock_raw)
         rhos = self.idata.get("rhos", None)
         if rhos is None:
             rhos = shock_data.get("rhos", [1.0, 1.2, 1.4, 1.6, 1.8, 2.0])
-        if shock_data is None:
-            raise ValueError("shock data is None, please check your in.yaml")
 
-        shock_data["pot"] = "nep"
-        if not shock_data.get("nep", None):
+        # `nepactive shock` 使用 in.yaml 的 shock.pot；仅在 pot=nep 时补默认 nep 路径
+        pot = shock_data.get("pot", "nep")
+        shock_data["pot"] = pot
+        if pot == "nep" and not shock_data.get("nep", None):
             shock_data["nep"] = os.path.join(os.path.abspath(os.getcwd()), "nep.txt")
         struture_files = os.path.join(os.path.abspath(os.getcwd()), "POSCAR")
         shock_data["structure_files"] = [struture_files]
@@ -541,6 +544,8 @@ class Nepactive(object):
             structure_files = []
         final_xyzs = glob(f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd/task.[0-9][0-9][0-9][0-9][0-9][0-9]/final.xyz")
         final_xyzs.sort()
+        if not final_xyzs:
+            raise FileNotFoundError(f"No final.xyz found under iter.{self.ii:06d}/01.gpumd/task.*")
         final_xyz = final_xyzs[-1]
         structure_files.append(final_xyz)
         shock_data["structure_files"] = structure_files
@@ -611,7 +616,7 @@ class Nepactive(object):
         '''
         train_steps = self.idata.get("train_steps", 10000)
         work_dir = os.path.abspath(os.path.join(self.iter_dir, "00.nep"))
-        pot_num = self.idata.get("pot_num", 4)
+        pot_num = self.idata.get("pot_num", self.idata.get("pot_number", 4))
         pot_inherit: bool = self.idata.get("pot_inherit", True)
         self.gpu_available = self.idata.get("gpu_available")
         processes = []
@@ -848,7 +853,7 @@ class Nepactive(object):
         #ensure the work_dir is the absolute pathk
         global_work_dir = os.path.abspath(self.work_dir)
         work_dir = os.path.abspath(os.path.join(self.iter_dir, "00.nep"))
-        pot_num = self.idata.get("pot_num", 4)
+        pot_num = self.idata.get("pot_num", self.idata.get("pot_number", 4))
         use_init_data:bool = self.idata.get("use_init_data", True)
 
         os.makedirs(work_dir, exist_ok=True)
@@ -1130,8 +1135,14 @@ class Nepactive(object):
         if os.path.exists(os.path.join(self.work_dir, "model_devi_general.txt")):
             file = os.path.join(self.work_dir, "model_devi_general.txt")
             with open(file, mode='r') as f:
-                model_devi_general = float(f.read()[-1])
-            self.model_devi_general_id = np.loadtxt(os.path.join(self.work_dir, "model_devi_general_id.txt"), dtype=int)[-1]
+                txt = f.read().strip()
+            if txt:
+                self.model_devi_general_id = int(float(txt.split()[-1]))
+            else:
+                self.model_devi_general_id = 0
+            id_file = os.path.join(self.work_dir, "model_devi_general_id.txt")
+            if os.path.exists(id_file):
+                self.model_devi_general_id = int(np.loadtxt(id_file, dtype=int, ndmin=1)[-1])
         else:
             self.model_devi_general_id = 0
         
@@ -1139,7 +1150,14 @@ class Nepactive(object):
         #     dlog.info(f"finished")
             # exit()
         
-        model_devi = model_devi_general[self.model_devi_general_id] 
+        if not model_devi_general:
+            raise ValueError("model_devi_general is empty in config")
+        if self.model_devi_general_id >= len(model_devi_general):
+            raise IndexError(
+                f"model_devi_general_id={self.model_devi_general_id} out of range "
+                f"for {len(model_devi_general)} entries"
+            )
+        model_devi = model_devi_general[self.model_devi_general_id]
 
         return model_devi
 
@@ -1188,7 +1206,9 @@ class Nepactive(object):
         """一次性获取所有配置，避免重复查询"""
         model_devi = self.get_model_devi()
         threshold = model_devi.get("uncertainty_threshold") or self.idata.get("uncertainty_threshold", [0.3, 1])
-        energy_threshold = self.idata.get("energy_threshold", None)
+        energy_threshold = self.idata.get("energy_threshold", float("inf"))
+        if energy_threshold is None:
+            energy_threshold = float("inf")
         
         config = {
             'plot': self.idata.get("gpumd_plt", True),
@@ -1208,7 +1228,10 @@ class Nepactive(object):
         }
         
         # 预计算一些常用值
-        config['max_candidate_per_task'] = config['max_candidate'] // len(self._get_cached_task_dirs())
+        task_count = len(self._get_cached_task_dirs())
+        if task_count == 0:
+            raise ValueError(f"No GPUMD task dirs found under {self.work_dir}/iter.{self.ii:06d}/01.gpumd")
+        config['max_candidate_per_task'] = max(1, config['max_candidate'] // task_count)
         config['summary'] = f"threshold:{threshold}, energy_threshold:{energy_threshold}, max_temp:{config['max_temp']}"
         dlog.info(f"Config summary: {config['summary']}")
         return config
@@ -1605,6 +1628,8 @@ class Nepactive(object):
         if not nep_dir:
             nep_dir = os.getcwd()
         calculator_fs = glob(f"{nep_dir}/**/nep*.txt")
+        if not calculator_fs:
+            raise FileNotFoundError(f"No NEP model found under: {nep_dir}")
         atoms_list = read(f"dump.xyz", index = ":")
         
 
@@ -1631,10 +1656,28 @@ class Nepactive(object):
         property_list_np = np.array(property_list)
         thermo = np.loadtxt("thermo.out")
         thermo_new = compute_volume_from_thermo(thermo)[:,[0,2,3,-1]]
-        frame_property = np.concatenate((property_list_np,thermo_new),axis=1)
-
         molecule_data = analyze_trajectory("dump.xyz", index=":").fillna(0)
         molecule_num = molecule_data.sum(axis=1).to_numpy()-molecule_data.iloc[:,0].to_numpy()
+        frame_count = min(len(atoms_list), len(time_list), len(property_list_np), len(thermo_new), len(molecule_num))
+        if frame_count == 0:
+            raise ValueError("No frame data found when post-processing dump.xyz/thermo.out")
+        if len(property_list_np) != len(thermo_new) or len(thermo_new) != len(molecule_num):
+            dlog.warning(
+                "frame count mismatch: atoms=%d, properties=%d, thermo=%d, molecules=%d; truncating to %d frames",
+                len(atoms_list),
+                len(property_list_np),
+                len(thermo_new),
+                len(molecule_num),
+                frame_count,
+            )
+        atoms_list = atoms_list[:frame_count]
+        time_list = time_list[:frame_count]
+        property_list_np = property_list_np[:frame_count]
+        thermo = thermo[:frame_count]
+        thermo_new = thermo_new[:frame_count]
+        molecule_data = molecule_data.iloc[:frame_count].copy()
+        molecule_num = molecule_num[:frame_count]
+        frame_property = np.concatenate((property_list_np,thermo_new),axis=1)
         molecule_density = molecule_num / frame_property[:,7]
         frame_property = np.hstack((frame_property, molecule_num.reshape(-1, 1)))
         frame_property = np.hstack((frame_property, molecule_density.reshape(-1, 1)))

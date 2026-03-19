@@ -525,9 +525,14 @@ class Nepactive_OB(Nepactive):
         original_make = shock_data.get("original_make", False)
         final_xyzs = glob(f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd/task.[0-9][0-9][0-9][0-9][0-9][0-9]/final.xyz")
         final_xyzs.sort()
+        if not final_xyzs:
+            raise FileNotFoundError(f"No final.xyz found under iter.{self.ii:06d}/01.gpumd/task.*")
 
         if original_make:
-            structure_files = [final_xyzs[len(self.idata.get("model_devi_general",{})[0].get("pressure"))-1]]
+            pressures = self.idata.get("model_devi_general", [{}])[0].get("pressure", [])
+            pick_index = len(pressures) - 1 if pressures else 0
+            pick_index = max(0, min(pick_index, len(final_xyzs) - 1))
+            structure_files = [final_xyzs[pick_index]]
         else:
             structure_files = []
 
@@ -537,7 +542,8 @@ class Nepactive_OB(Nepactive):
         if rho:
             dlog.info(f"rho is {rho}, will run shock velocity test for rho={rho}")
             shock_data["rho"] = rho
-        structure_files.append(final_xyz)
+        if not structure_files or structure_files[-1] != final_xyz:
+            structure_files.append(final_xyz)
 
         for ii, struc in enumerate(structure_files):
             os.makedirs(f"job.{ii:03d}",exist_ok=True)
@@ -569,7 +575,7 @@ class Nepactive_OB(Nepactive):
         '''
         train_steps = self.idata.get("train_steps", 5000)
         work_dir = os.path.abspath(os.path.join(self.iter_dir, "00.nep"))
-        pot_num = self.idata.get("pot_num", 4)
+        pot_num = self.idata.get("pot_num", self.idata.get("pot_number", 4))
         pot_inherit:bool = self.idata.get("pot_inherit", True)
         # nep_template = os.path.abspath(self.idata.get("nep_template"))
         processes = []
@@ -665,7 +671,7 @@ class Nepactive_OB(Nepactive):
         #ensure the work_dir is the absolute pathk
         global_work_dir = os.path.abspath(self.work_dir)
         work_dir = os.path.abspath(os.path.join(self.iter_dir, "00.nep"))
-        pot_num = self.idata.get("pot_num", 4)
+        pot_num = self.idata.get("pot_num", self.idata.get("pot_number", 4))
         use_init_data:bool = self.idata.get("use_init_data", True)
 
         os.makedirs(work_dir, exist_ok=True)
@@ -1399,9 +1405,26 @@ class Nepactive_OB(Nepactive):
         property_list_np = np.array(property_list)
         thermo = np.loadtxt("thermo.out")
         thermo_new = compute_volume_from_thermo(thermo)[:,[0,2,3,-1]]
-        frame_property = np.concatenate((property_list_np,thermo_new),axis=1)
-
         molecule_num = analyze_trajectory("dump.xyz", index=":").sum(axis=1).to_numpy()
+        frame_count = min(len(atoms_list), len(time_list), len(property_list_np), len(thermo_new), len(molecule_num))
+        if frame_count == 0:
+            raise ValueError("No frame data found when post-processing dump.xyz/thermo.out")
+        if len(property_list_np) != len(thermo_new) or len(thermo_new) != len(molecule_num):
+            dlog.warning(
+                "frame count mismatch: atoms=%d, properties=%d, thermo=%d, molecules=%d; truncating to %d frames",
+                len(atoms_list),
+                len(property_list_np),
+                len(thermo_new),
+                len(molecule_num),
+                frame_count,
+            )
+        atoms_list = atoms_list[:frame_count]
+        time_list = time_list[:frame_count]
+        property_list_np = property_list_np[:frame_count]
+        thermo = thermo[:frame_count]
+        thermo_new = thermo_new[:frame_count]
+        molecule_num = molecule_num[:frame_count]
+        frame_property = np.concatenate((property_list_np,thermo_new),axis=1)
         molecule_density = molecule_num / frame_property[:,7]
         frame_property = np.hstack((frame_property, molecule_num.reshape(-1, 1)))
         frame_property = np.hstack((frame_property, molecule_density.reshape(-1, 1)))

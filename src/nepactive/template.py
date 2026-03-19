@@ -384,3 +384,78 @@ dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
 dyn.attach(traj.write, interval={dump_freq})
 dyn.run(steps)
 """
+
+# NPT with temperature and pressure ramping
+npt_ramp_pytemplate = """
+from ase.io import read, write
+from nepactive.logger import MDLogger
+from ase import units
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
+from ase.io.trajectory import Trajectory
+import numpy as np
+from ase.optimize import LBFGS
+from nepactive.npt_scr import NPT_SCR
+from mattersim.forcefield import MatterSimCalculator
+calculator = MatterSimCalculator(device="cuda")
+atoms = read("{structure}")
+elements = atoms.get_chemical_symbols()
+sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
+atoms.calc = calculator
+opt = LBFGS(atoms)
+opt.run(fmax=0.05, steps=40)
+steps = {steps}
+write("opt.pdb", atoms)
+MaxwellBoltzmannDistribution(atoms, temperature_K={t_start})
+Stationary(atoms)
+ZeroRotation(atoms)
+traj = Trajectory('out.traj', 'w', atoms)
+timestep = {time_step} * units.fs
+dyn = NPT_SCR(atoms, timestep=timestep,
+              temperature={t_start}, pressure={p_start},
+              run_steps=steps,
+              t_start={t_start}, t_stop={t_stop},
+              p_start={p_start}, p_stop={p_stop},
+              tau_t={tau_t}, tau_p={tau_p},
+              pmode="{pmode}")
+dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
+        volume=True, mode="w"), interval={dump_freq})
+dyn.attach(traj.write, interval={dump_freq})
+dyn.run(steps)
+"""
+
+# NVT with temperature ramping (no barostat)
+nvt_ramp_pytemplate = """
+from ase.io import read, write
+from nepactive.logger import MDLogger
+from ase import units
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
+from ase.io.trajectory import Trajectory
+import numpy as np
+from ase.optimize import LBFGS
+from nepactive.npt_scr import NPT_SCR
+from mattersim.forcefield import MatterSimCalculator
+calculator = MatterSimCalculator(device="cuda")
+atoms = read("{structure}")
+elements = atoms.get_chemical_symbols()
+sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
+atoms.calc = calculator
+opt = LBFGS(atoms)
+opt.run(fmax=0.05, steps=40)
+steps = {steps}
+write("opt.pdb", atoms)
+MaxwellBoltzmannDistribution(atoms, temperature_K={t_start})
+Stationary(atoms)
+ZeroRotation(atoms)
+traj = Trajectory('out.traj', 'w', atoms)
+timestep = {time_step} * units.fs
+dyn = NPT_SCR(atoms, timestep=timestep,
+              temperature={t_start}, pressure=0,
+              run_steps=steps,
+              t_start={t_start}, t_stop={t_stop},
+              pmode=None,
+              tau_t={tau_t})
+dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
+        volume=True, mode="w"), interval={dump_freq})
+dyn.attach(traj.write, interval={dump_freq})
+dyn.run(steps)
+"""

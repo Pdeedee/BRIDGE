@@ -164,15 +164,12 @@ def calculate_heat_of_detonation(work_dir: str, nep_path: str, gpu_id: int = 0,
             raise FileNotFoundError(f"properties.txt not found in {work_dir}")
 
         rho, e0, p0, v0, nat = np.loadtxt(properties_file)
-        dlog.info(f"Initial energy: {e0:.6f} eV, atoms: {int(nat)}")
+        dlog.info(f"Initial energy (from properties.txt): {e0:.6f} eV, atoms: {int(nat)}")
 
         # 计算优化后的能量
         ef = calculate_optimized_energy(work_dir, nep_path, gpu_id, job_system)
 
-        # 计算爆热
-        Q_release = e0 - ef  # eV per structure
-
-        # 读取结构获取质量
+        # 读取结构获取质量和初始势能
         final_xyz_path = os.path.join(work_dir, "struc.000", "task.000", "final.xyz")
         if os.path.exists(final_xyz_path):
             atoms = read(final_xyz_path)
@@ -182,23 +179,42 @@ def calculate_heat_of_detonation(work_dir: str, nep_path: str, gpu_id: int = 0,
 
         mass = atoms.get_masses().sum() / units.kg  # kg
 
-        # 转换为 kJ/kg (使用 ASE units)
-        Q_release_per_kg = Q_release / units.kJ / mass
+        # 计算初始势能（用同一个 calculator 重新算，排除 NVT 动能影响）
+        from mattersim.forcefield import MatterSimCalculator
+        calc = MatterSimCalculator(device='cuda')
+        init_atoms = read(os.path.join(work_dir, "POSCAR"))
+        init_atoms.calc = calc
+        pe0 = init_atoms.get_potential_energy()
+        dlog.info(f"Initial potential energy (recalculated): {pe0:.6f} eV")
 
-        dlog.info(f"Final energy: {ef:.6f} eV")
-        dlog.info(f"Heat of detonation: {Q_release:.6f} eV = {Q_release_per_kg:.2f} kJ/kg")
+        # Q_pe: 纯势能差
+        Q_pe = pe0 - ef
+        Q_pe_per_kg = Q_pe / units.kJ / mass
+
+        # Q_total: 总能量差（e0 来自 NVT 平衡后，含动能贡献）
+        Q_total = e0 - ef
+        Q_total_per_kg = Q_total / units.kJ / mass
+
+        dlog.info(f"Final energy (optimized): {ef:.6f} eV")
+        dlog.info(f"Q_pe  (potential only): {Q_pe:.6f} eV = {Q_pe_per_kg:.2f} kJ/kg")
+        dlog.info(f"Q_total (with kinetic): {Q_total:.6f} eV = {Q_total_per_kg:.2f} kJ/kg")
         dlog.info(f"Number of atoms: {int(nat)}, Total mass: {mass*1e27:.6f} g")
 
         # 保存结果
         q_release_file = os.path.join(work_dir, "Q_release.txt")
         with open(q_release_file, "w") as f:
             f.write(f"# Heat of Detonation\n")
-            f.write(f"# Q (eV): {Q_release:.6f}\n")
-            f.write(f"# Q (kJ/kg): {Q_release_per_kg:.2f}\n")
+            f.write(f"# E0 (properties.txt): {e0:.6f} eV\n")
+            f.write(f"# PE0 (potential energy): {pe0:.6f} eV\n")
+            f.write(f"# Ef (optimized): {ef:.6f} eV\n")
+            f.write(f"# Q_pe  (eV): {Q_pe:.6f}\n")
+            f.write(f"# Q_pe  (kJ/kg): {Q_pe_per_kg:.2f}\n")
+            f.write(f"# Q_total (eV): {Q_total:.6f}\n")
+            f.write(f"# Q_total (kJ/kg): {Q_total_per_kg:.2f}\n")
             f.write(f"# Atoms: {int(nat)}, Mass: {mass*1e27:.6f} g\n")
-            f.write(f"{Q_release_per_kg:.4f}\n")
+            f.write(f"{Q_pe_per_kg:.4f} {Q_total_per_kg:.4f}\n")
 
-        return Q_release_per_kg
+        return Q_pe_per_kg
 
     finally:
         os.chdir(original_dir)

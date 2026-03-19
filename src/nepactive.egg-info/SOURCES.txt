@@ -16,6 +16,7 @@ src/nepactive/make_product.py
 src/nepactive/nphugo.py
 src/nepactive/nphugo_old.py
 src/nepactive/npt_scr.py
+src/nepactive/npt_scr_ramp.py
 src/nepactive/omdMSST.py
 src/nepactive/opt.py
 src/nepactive/packmol.py

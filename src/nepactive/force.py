@@ -24,8 +24,10 @@ def get_force_list(atoms_list: List[Atoms], nep_file):
     return f_list
 
 def force_main(atoms_list: List[Atoms], pot_files: list):
+    if not pot_files:
+        raise ValueError("pot_files is empty, cannot compute model deviation force")
     multiprocessing.set_start_method('spawn', force=True)
-    executor = ProcessPoolExecutor(max_workers=min(len(pot_files), os.cpu_count()))
+    executor = ProcessPoolExecutor(max_workers=min(len(pot_files), os.cpu_count() or 1))
     atexit.register(lambda: executor.shutdown(wait=False))  # 注册退出清理
     
     try:

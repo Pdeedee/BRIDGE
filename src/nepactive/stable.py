@@ -394,7 +394,22 @@ class ShockRun(BaseRun):
                 shortest_distances.append(shortest_d)
             molecule_data = analyze_trajectory("dump.xyz", index=":")
             molecule_num = molecule_data.sum(axis=1).to_numpy()
-            molecule_density = molecule_num / thermo_new[:, 3]
+            frame_count = min(len(shortest_distances), len(molecule_num), len(thermo_new))
+            if frame_count == 0:
+                raise ValueError(f"No frame data found in {task_dir}")
+            if len(shortest_distances) != len(molecule_num) or len(molecule_num) != len(thermo_new):
+                dlog.warning(
+                    "frame count mismatch in %s: shortest_distances=%d, molecule_num=%d, thermo=%d; "
+                    "truncating to %d frames",
+                    task_dir,
+                    len(shortest_distances),
+                    len(molecule_num),
+                    len(thermo_new),
+                    frame_count,
+                )
+            shortest_distances = np.asarray(shortest_distances[:frame_count])
+            molecule_num = molecule_num[:frame_count]
+            molecule_density = molecule_num / thermo_new[:frame_count, 3]
             molecule_data.to_csv("molecule_data.csv")
             data = np.column_stack((shortest_distances, molecule_num, molecule_density))
             np.savetxt('frame_properties.txt', data, fmt='%12.2f')

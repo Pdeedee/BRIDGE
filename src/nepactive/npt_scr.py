@@ -263,14 +263,63 @@ class NPT_SCR(MolecularDynamics):
                  tau_t=100.0,                              # 单位 timestep，与 GPUMD tau_T 一致
                  tau_p=2000.0,                             # 单位 timestep，与 GPUMD tau_p 一致
                  elastic_modulus=DEFAULT_BULK_MODULUS,      # GPa，默认 15
-                 pmode='iso', deform=None, seed=None, **kwargs):
+                 pmode='iso', deform=None, seed=None,
+                 # --- 渐变参数 ---
+                 run_steps=None,           # 总步数，用于计算渐变进度
+                 t_start=None,             # 起始温度 (K)，默认为 temperature
+                 t_stop=None,              # 终止温度 (K)，默认为 temperature
+                 t_schedule=None,          # 自定义温度函数 callable(progress) -> T(K)
+                 p_start=None,             # 起始压力 (GPa)，默认为 pressure
+                 p_stop=None,              # 终止压力 (GPa)，默认为 pressure
+                 p_schedule=None,          # 自定义压力函数 callable(progress) -> P(GPa)
+                 v_start=1.0,              # 起始相对体积，1.0 = 初始体积
+                 v_stop=None,              # 终止相对体积，None = 不做体积渐变
+                 v_schedule=None,          # 自定义体积函数 callable(progress) -> relative_volume
+                 **kwargs):
         super().__init__(atoms=atoms, timestep=timestep, **kwargs)
 
-        self.temp_target = temperature
         self.temp_coupling = tau_t
-        self.pmode = pmode.lower()
+        self.pmode = pmode.lower() if pmode is not None else None
         self.natoms = len(atoms)
         self.rng = np.random.default_rng(seed)
+
+        # 温度渐变设置
+        self.t_start = t_start if t_start is not None else temperature
+        self.t_stop = t_stop if t_stop is not None else temperature
+        self.t_schedule = t_schedule
+        self.temp_target = self.t_start
+
+        # 压力渐变设置
+        if np.isscalar(pressure):
+            p_init = float(pressure)
+        else:
+            p_init = float(pressure[0]) if len(pressure) > 0 else 0.0
+        self.p_start_gpa = p_start if p_start is not None else p_init
+        self.p_stop_gpa = p_stop if p_stop is not None else self.p_start_gpa
+        self.p_schedule = p_schedule
+
+        # 体积渐变设置
+        self.v_start = v_start
+        self.v_stop = v_stop
+        self.v_schedule = v_schedule
+        self.initial_cell = None
+        self.initial_volume = None
+        self.volume_ramp_active = (v_stop is not None)
+
+        # 渐变控制
+        self.run_steps_total = run_steps
+        self._has_ramp = (self.t_start != self.t_stop or
+                          self.p_start_gpa != self.p_stop_gpa or
+                          self.volume_ramp_active or
+                          t_schedule is not None or p_schedule is not None or v_schedule is not None)
+        if self._has_ramp and run_steps is None:
+            raise ValueError("run_steps is required when using ramping (t_start!=t_stop, p_start!=p_stop, or v_stop is set)")
+
+        # 气压计控制
+        self.use_barostat = (pmode is not None)
+        if self.volume_ramp_active and self.use_barostat:
+            # 体积渐变和气压计默认互斥，但用户可以手动覆盖
+            self.use_barostat = False
 
         self._setup_pressure(pressure, tau_p, elastic_modulus)
         self._setup_deform(deform)
@@ -287,7 +336,11 @@ class NPT_SCR(MolecularDynamics):
         self.target_pressure = np.zeros(6)
         self.p_coupling = np.zeros(6)
 
-        if self.pmode == 'iso':
+        if self.pmode is None:
+            # NVT 模式：无气压计
+            self.num_p_components = 0
+            return
+        elif self.pmode == 'iso':
             self.num_p_components = 1
             p = float(pressure) if np.isscalar(pressure) else float(pressure[0])
             self.target_pressure[:3] = p * gpa
@@ -324,6 +377,35 @@ class NPT_SCR(MolecularDynamics):
         ASE get_stress returns -sigma/V * V = -sigma, so negate it.
         """
         return -self.atoms.get_stress(voigt=True, include_ideal_gas=True)
+
+    def _update_targets(self):
+        """根据当前进度更新温度、压力目标值"""
+        if not self._has_ramp:
+            return
+
+        progress = min(self.nsteps / self.run_steps_total, 1.0)
+
+        # 更新温度目标
+        if self.t_schedule is not None:
+            self.temp_target = self.t_schedule(progress)
+        else:
+            self.temp_target = self.t_start + (self.t_stop - self.t_start) * progress
+
+        # 更新压力目标
+        if self.use_barostat:
+            if self.p_schedule is not None:
+                p_gpa = self.p_schedule(progress)
+            else:
+                p_gpa = self.p_start_gpa + (self.p_stop_gpa - self.p_start_gpa) * progress
+
+            # 更新内部 target_pressure 数组 (eV/Å³)
+            gpa = units.GPa
+            if self.pmode == 'iso':
+                self.target_pressure[:3] = p_gpa * gpa
+            elif self.pmode == 'ortho':
+                self.target_pressure[:3] = p_gpa * gpa
+            elif self.pmode == 'tri':
+                self.target_pressure[:] = p_gpa * gpa
 
     def _apply_thermostat(self):
         """
@@ -388,11 +470,39 @@ class NPT_SCR(MolecularDynamics):
             self.atoms.set_cell(new_cell, scale_atoms=False)
             self.atoms.set_positions(new_positions)
 
+    def _apply_volume_ramp(self):
+        """直接缩放晶胞以匹配目标相对体积"""
+        if not self.volume_ramp_active:
+            return
+
+        if self.initial_cell is None:
+            self.initial_cell = self.atoms.get_cell().array.copy()
+            self.initial_volume = self.atoms.get_volume()
+
+        progress = min(self.nsteps / self.run_steps_total, 1.0)
+
+        if self.v_schedule is not None:
+            target_rel_vol = self.v_schedule(progress)
+        else:
+            target_rel_vol = self.v_start + (self.v_stop - self.v_start) * progress
+
+        # 各向同性缩放：scale_factor^3 = target_rel_vol / current_rel_vol
+        current_volume = self.atoms.get_volume()
+        current_rel_vol = current_volume / self.initial_volume
+
+        if current_rel_vol > 0:
+            scale = (target_rel_vol / current_rel_vol) ** (1.0 / 3.0)
+            cell = self.atoms.get_cell().array
+            self.atoms.set_cell(cell * scale, scale_atoms=True)
+
     def step(self):
         """
-        One MD step: velocity Verlet + BDP thermostat + SCR barostat.
+        One MD step: velocity Verlet + BDP thermostat + SCR barostat + volume ramp.
         Matches GPUMD compute1() + compute2() sequence.
         """
+        # 更新渐变目标值
+        self._update_targets()
+
         atoms = self.atoms
         masses = atoms.get_masses()[:, np.newaxis]
 
@@ -419,7 +529,11 @@ class NPT_SCR(MolecularDynamics):
 
         # compute2: thermostat then barostat
         self._apply_thermostat()
-        self._apply_barostat()
+        if self.use_barostat:
+            self._apply_barostat()
+
+        # 体积渐变（在气压计之后）
+        self._apply_volume_ramp()
 
     def run(self, steps):
         for _ in range(steps):
@@ -622,9 +736,14 @@ class NPH_SCR_Hugo(NPH_SCR):
 def create_npt_scr(atoms, timestep=1.0, temperature=300.0, pressure=0.0,
                    tau_t=100.0, tau_p=2000.0,
                    elastic_modulus=DEFAULT_BULK_MODULUS,
-                   pmode='iso', **kwargs):
+                   pmode='iso',
+                   run_steps=None,
+                   t_start=None, t_stop=None, t_schedule=None,
+                   p_start=None, p_stop=None, p_schedule=None,
+                   v_start=1.0, v_stop=None, v_schedule=None,
+                   **kwargs):
     """
-    Create NPT_SCR dynamics.
+    Create NPT_SCR dynamics with optional ramping support.
 
     Parameters
     ----------
@@ -634,7 +753,14 @@ def create_npt_scr(atoms, timestep=1.0, temperature=300.0, pressure=0.0,
     tau_t : float, BDP 恒温器弛豫时间，单位 timestep（默认 100，与 GPUMD 一致）
     tau_p : float, SCR 气压计弛豫时间，单位 timestep（默认 2000，与 GPUMD 一致）
     elastic_modulus : float, 体积模量 (GPa)，默认 15（含能材料典型值）
-    pmode : str, 压力模式 iso/ortho/tri
+    pmode : str, 压力模式 iso/ortho/tri，None 表示 NVT 模式
+    run_steps : int, 总步数（渐变时必需）
+    t_start, t_stop : float, 温度渐变起止值 (K)
+    t_schedule : callable, 自定义温度函数 f(progress) -> T(K)
+    p_start, p_stop : float, 压力渐变起止值 (GPa)
+    p_schedule : callable, 自定义压力函数 f(progress) -> P(GPa)
+    v_start, v_stop : float, 相对体积渐变起止值（1.0 = 初始体积）
+    v_schedule : callable, 自定义体积函数 f(progress) -> relative_volume
     """
     return NPT_SCR(
         atoms=atoms,
@@ -645,5 +771,9 @@ def create_npt_scr(atoms, timestep=1.0, temperature=300.0, pressure=0.0,
         tau_p=tau_p,
         elastic_modulus=elastic_modulus,
         pmode=pmode,
+        run_steps=run_steps,
+        t_start=t_start, t_stop=t_stop, t_schedule=t_schedule,
+        p_start=p_start, p_stop=p_stop, p_schedule=p_schedule,
+        v_start=v_start, v_stop=v_stop, v_schedule=v_schedule,
         **kwargs)
 
