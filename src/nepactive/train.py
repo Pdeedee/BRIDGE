@@ -30,6 +30,7 @@ from nepactive.force import force_main
 from nepactive.packmol import make_structure
 from nepactive.plt import ase_plt, gpumdplt, nep_plt
 from nepactive.remote import Remotetask
+from nepactive.sampling import select_structure_indices, split_train_test_structures
 from nepactive.stable import InitRun, ShockRun
 from nepactive.template import (
     continue_pytemplate,
@@ -102,6 +103,241 @@ def record_iter(record, ii, jj):
         frec.write("%d %d\n" % (ii, jj))
 
 class Nepactive(object):
+    @staticmethod
+    def _sampling_config(data: Optional[dict]) -> dict:
+        sampling = data.get("sampling")
+        if sampling is None:
+            raise KeyError("sampling")
+        if not isinstance(sampling, dict):
+            raise TypeError("sampling must be a mapping")
+        return sampling
+
+    @classmethod
+    def _sampling_general_config(cls, data: Optional[dict]) -> dict:
+        sampling_general = cls._sampling_config(data).get("general")
+        if sampling_general is None:
+            raise KeyError("sampling.general")
+        if not sampling_general:
+            raise ValueError("sampling.general is empty in config")
+        if not isinstance(sampling_general, dict):
+            raise TypeError("sampling.general must be a mapping")
+        return sampling_general
+
+    @staticmethod
+    def _iter_existing_structure_files(data: dict, work_dir: Optional[str] = None):
+        structure_prefix = data.get("structure_prefix", work_dir or os.getcwd())
+        structure_files = data.get("structure_files", []) or []
+        for struct_file in structure_files:
+            struct_path = struct_file if os.path.isabs(struct_file) else os.path.join(structure_prefix, struct_file)
+            if os.path.exists(struct_path):
+                yield struct_path
+
+    @classmethod
+    def infer_nep_in_header(cls, data: dict, work_dir: Optional[str] = None) -> str:
+        explicit_header = data.get("nep_in_header")
+        if explicit_header:
+            return explicit_header
+
+        elements = []
+        for struct_path in cls._iter_existing_structure_files(data, work_dir=work_dir):
+            atoms = read(struct_path)
+            for symbol in atoms.get_chemical_symbols():
+                if symbol not in elements:
+                    elements.append(symbol)
+
+        if not elements:
+            raise ValueError(
+                "Cannot infer nep_in_header because no readable structure_files were found. "
+                "Set nep_in_header explicitly in in.yaml."
+            )
+        return f"type {len(elements)} " + " ".join(elements)
+
+    @staticmethod
+    def _read_nep_in_header(nep_in_path: str) -> Optional[str]:
+        if not os.path.exists(nep_in_path):
+            return None
+        with open(nep_in_path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("type "):
+                    return stripped
+        return None
+
+    def _resolve_nep_in_header(self, task_index: int, pot_inherit: bool) -> str:
+        current_header = self.infer_nep_in_header(self.idata, work_dir=self.work_dir)
+        explicit_header = self.idata.get("nep_in_header")
+        if explicit_header:
+            return explicit_header
+        if pot_inherit and self.ii > 0:
+            previous_nep_in = os.path.join(
+                self.work_dir,
+                f"iter.{self.ii-1:06d}",
+                "00.nep",
+                f"task.{task_index:06d}",
+                "nep.in",
+            )
+            previous_header = self._read_nep_in_header(previous_nep_in)
+            if previous_header and previous_header != current_header:
+                raise ValueError(
+                    "Auto-inferred nep_in_header changed while pot_inherit=True: "
+                    f"previous='{previous_header}', current='{current_header}'. "
+                    "Set nep_in_header explicitly in in.yaml to keep element order fixed."
+                )
+        return current_header
+
+    @staticmethod
+    def _ensure_atoms_list(atoms_obj) -> list[Atoms]:
+        if atoms_obj is None:
+            return []
+        if isinstance(atoms_obj, Atoms):
+            return [atoms_obj]
+        return list(atoms_obj)
+
+    def _load_xyz_structures(self, file_path: str) -> list[Atoms]:
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            return []
+        atoms_obj = read(file_path, index=":")
+        return self._ensure_atoms_list(atoms_obj)
+
+    def _filter_atoms_by_shortest_distance(
+        self,
+        atoms_list: list[Atoms],
+        min_distance: float,
+        context: str,
+    ) -> tuple[list[Atoms], np.ndarray]:
+        if not atoms_list:
+            return [], np.array([], dtype=float)
+        if min_distance is None or float(min_distance) <= 0:
+            return list(atoms_list), np.array([], dtype=float)
+
+        shortest_distances = np.asarray(
+            [get_shortest_distance(atoms) for atoms in atoms_list],
+            dtype=float,
+        )
+        keep_mask = shortest_distances >= float(min_distance)
+        removed_count = int(np.count_nonzero(~keep_mask))
+        if removed_count:
+            dlog.warning(
+                "%s removed %d/%d structures with shortest distance < %.3f",
+                context,
+                removed_count,
+                len(atoms_list),
+                float(min_distance),
+            )
+        filtered_atoms = [atoms for atoms, keep in zip(atoms_list, keep_mask) if keep]
+        return filtered_atoms, shortest_distances
+
+    def _truncate_atoms_before_shortest_distance_failure(
+        self,
+        atoms_list: list[Atoms],
+        min_distance: float,
+        context: str,
+    ) -> tuple[list[Atoms], np.ndarray]:
+        if not atoms_list:
+            return [], np.array([], dtype=float)
+        if min_distance is None or float(min_distance) <= 0:
+            return list(atoms_list), np.array([], dtype=float)
+
+        shortest_distances = np.asarray(
+            [get_shortest_distance(atoms) for atoms in atoms_list],
+            dtype=float,
+        )
+        bad_indices = np.where(shortest_distances < float(min_distance))[0]
+        if bad_indices.size == 0:
+            return list(atoms_list), shortest_distances
+
+        first_bad = int(bad_indices[0])
+        dlog.warning(
+            "%s truncated at frame %d; discarded %d trailing structures with shortest distance < %.3f",
+            context,
+            first_bad,
+            len(atoms_list) - first_bad,
+            float(min_distance),
+        )
+        return list(atoms_list[:first_bad]), shortest_distances
+
+    def _load_sampling_reference_structures(self) -> list[Atoms]:
+        reference_atoms: list[Atoms] = []
+        sampling_cfg = self._sampling_config(self.idata)
+        max_reference_points = int(sampling_cfg.get("max_reference_points", 10000) or 0)
+        reference_files = [
+            os.path.join(self.work_dir, "init", "iter_train.xyz"),
+            os.path.join(self.work_dir, "init", "iter_test.xyz"),
+        ]
+        for iii in range(max(self.ii, 0)):
+            reference_files.extend(
+                [
+                    os.path.join(self.work_dir, f"iter.{iii:06d}", "02.label", "iter_train.xyz"),
+                    os.path.join(self.work_dir, f"iter.{iii:06d}", "02.label", "iter_test.xyz"),
+                ]
+            )
+
+        for file_path in reference_files:
+            reference_atoms.extend(self._load_xyz_structures(file_path))
+        original_count = len(reference_atoms)
+        if max_reference_points > 0 and original_count > max_reference_points:
+            selected_indices = sorted(random.sample(range(original_count), max_reference_points))
+            reference_atoms = [reference_atoms[index] for index in selected_indices]
+            dlog.info(
+                "Downsampled reference structures from %d to %d before dataset-aware FPS",
+                original_count,
+                len(reference_atoms),
+            )
+        dlog.info("Loaded %d reference structures for dataset-aware FPS", len(reference_atoms))
+        return reference_atoms
+
+    def _sampling_descriptor_kwargs(self) -> dict:
+        sampling_cfg = self._sampling_config(self.idata)
+        return {
+            "method": sampling_cfg.get("dataset_method", "fps"),
+            "descriptor_model": sampling_cfg.get("dataset_nep_file", self.idata.get("nep_file")),
+            "descriptor_mode": sampling_cfg.get("dataset_descriptor", "auto"),
+            "min_dist": sampling_cfg.get("dataset_min_dist", 0.0),
+            "nep_backend": sampling_cfg.get("dataset_backend", "auto"),
+        }
+
+    def _write_global_candidate_pool(
+        self,
+        candidate_records: list[dict],
+        candidate_file: str,
+        max_candidate: int,
+        existing_atoms: Optional[list[Atoms]] = None,
+    ) -> int:
+        candidate_atoms: list[Atoms] = list(existing_atoms or [])
+        for record in candidate_records:
+            candidate_atoms.extend(record.get("atoms", []))
+
+        candidate_atoms, _ = self._filter_atoms_by_shortest_distance(
+            candidate_atoms,
+            self.idata.get("shortest_d", 0.0),
+            "Global candidate pool",
+        )
+        if not candidate_atoms:
+            open(candidate_file, "w", encoding="utf-8").close()
+            return 0
+
+        if len(candidate_atoms) > max_candidate:
+            reference_atoms = self._load_sampling_reference_structures()
+            selected_indices = select_structure_indices(
+                candidate_atoms,
+                n_samples=max_candidate,
+                reference_atoms_list=reference_atoms,
+                **self._sampling_descriptor_kwargs(),
+            )
+            candidate_atoms = [candidate_atoms[index] for index in selected_indices]
+            dlog.info(
+                "Global candidate FPS kept %d/%d structures against %d reference structures",
+                len(candidate_atoms),
+                len(existing_atoms or []) + sum(len(record.get("atoms", [])) for record in candidate_records),
+                len(reference_atoms),
+            )
+        else:
+            dlog.info("Global candidate pool kept all %d structures", len(candidate_atoms))
+
+        with open(candidate_file, "w", encoding="utf-8") as candidate_f:
+            write_extxyz(candidate_f, candidate_atoms)
+        return len(candidate_atoms)
+
     def __init__(self,idata:dict):
         self.idata:dict = idata
         self.work_dir = os.getcwd()
@@ -111,14 +347,15 @@ class Nepactive(object):
         self.structure_prefix = self.idata.get("structure_prefix", self.work_dir)
         if self.shock_run:
             self.check_inistruc()
+            sampling_cfg = self._sampling_general_config(self.idata)
             if os.path.exists(f"{self.work_dir}/nostrucnum"):
                 self.idata.setdefault("init", {})["struc_num"] = 0
                 self.idata["structure_files"] = self.idata.get("structure_files",["POSCAR"])
-                self.idata["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0]])
+                sampling_cfg["structure_id"] = sampling_cfg.get("structure_id", [[0]])
             else:
                 self.idata.setdefault("init", {})["struc_num"] = 1
                 self.idata["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
-                self.idata["model_devi_general"][0]["structure_id"] = [[0,1]]
+                sampling_cfg["structure_id"] = [[0, 1]]
         else:
             self.idata.setdefault("init", {})["struc_num"] = 0
         # dlog.info(f"self.idata:{self.idata}")
@@ -155,6 +392,26 @@ class Nepactive(object):
             write(f"{self.work_dir}/POSCAR", atoms)
         else:
             raise ValueError("No initial structure found, please provide POSCAR or molecule.xyz")
+
+    def _sampling_dir(self, ii: Optional[int] = None, prefer_existing: bool = True) -> str:
+        idx = self.ii if ii is None else ii
+        new_dir = os.path.join(self.work_dir, f"iter.{idx:06d}", "01.sampling")
+        old_dir = os.path.join(self.work_dir, f"iter.{idx:06d}", "01.gpumd")
+        if prefer_existing:
+            if os.path.exists(new_dir):
+                return new_dir
+            if os.path.exists(old_dir):
+                return old_dir
+        return new_dir
+
+    def _sampling_state_path(self, filename: str) -> str:
+        new_path = os.path.join(self.work_dir, filename.replace("model_devi", "sampling"))
+        old_path = os.path.join(self.work_dir, filename)
+        if os.path.exists(new_path):
+            return new_path
+        if os.path.exists(old_path):
+            return old_path
+        return new_path
 
     def run(self):
         '''
@@ -224,11 +481,12 @@ class Nepactive(object):
         init_run = InitRun(self.idata, init_data)
         init_run.calculate_properties()
         if self.shock_run:
-            if not os.path.exists(f"{self.work_dir}/nostrucnum"):                
+            if not os.path.exists(f"{self.work_dir}/nostrucnum"):
+                sampling_cfg = self._sampling_general_config(self.idata)
                 self.idata["structure_files"]=["POSCAR","init/struc.000/structure/POSCAR"]
-                self.idata["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0,1],[0,1]])
-                self.idata["model_devi_general"][0]["temperature"] = [3000]
-                self.idata["model_devi_general"][0]["ensemble"] = ["nphugo_scr","nvt"]
+                sampling_cfg["structure_id"] = sampling_cfg.get("structure_id", [[0, 1], [0, 1]])
+                sampling_cfg["temperature"] = [3000]
+                sampling_cfg["ensemble"] = ["nphugo_scr","nvt"]
                 try:
                     for ii in range(init_run.struc_num):
                         os.chdir(work_dir)
@@ -241,11 +499,12 @@ class Nepactive(object):
                     dlog.warning(f"Error in make preparations: {e}")
                     os.system(f"touch {self.work_dir}/nostrucnum")
                     if self.shock_run:
+                        sampling_cfg = self._sampling_general_config(self.idata)
                         self.idata.setdefault("init", {})["struc_num"] = 0
                         self.idata["structure_files"] = self.idata.get("structure_files",["POSCAR"])
-                        self.idata["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0],[0]])
-                        self.idata["model_devi_general"][0]["ensemble"] = ["nphugo_scr","nvt"]
-                        self.idata["model_devi_general"][0]["temperature"] = [3000]
+                        sampling_cfg["structure_id"] = sampling_cfg.get("structure_id", [[0], [0]])
+                        sampling_cfg["ensemble"] = ["nphugo_scr","nvt"]
+                        sampling_cfg["temperature"] = [3000]
                         dlog.warning("Exception occurred, set struc_num to 0 and continue")
 
         # 处理用户在 in.yaml 中额外提供的结构文件（跳过自动生成的 init/struc.000/structure/POSCAR）
@@ -370,14 +629,16 @@ class Nepactive(object):
             dlog.info(f"Extracted {init_frames} frames from {fnumber} files.")
 
         write_extxyz("init/init.xyz", atoms)
-        for i in range(len(atoms)):
-            rand=random.random()
-            if rand <= training_ratio:
-                train.append(atoms[i])
-            elif rand > training_ratio:
-                test.append(atoms[i])
-            else:
-                dlog.warning(f"{atoms[i]}failed to be classified")
+        sampling_cfg = self._sampling_config(self.idata)
+        train, test = split_train_test_structures(
+            atoms,
+            training_ratio=training_ratio,
+            method=sampling_cfg.get("init_method", sampling_cfg.get("dataset_method", "fps")),
+            descriptor_model=sampling_cfg.get("init_nep_file", sampling_cfg.get("dataset_nep_file", self.idata.get("nep_file"))),
+            descriptor_mode=sampling_cfg.get("init_descriptor", sampling_cfg.get("dataset_descriptor", "soap")),
+            min_dist=sampling_cfg.get("init_min_dist", sampling_cfg.get("dataset_min_dist", 0.0)),
+            nep_backend=sampling_cfg.get("init_backend", sampling_cfg.get("dataset_backend", "auto")),
+        )
         write_extxyz("init/iter_train.xyz", train)
         write_extxyz("init/iter_test.xyz", test)
         dlog.info("Initial training data extracted")
@@ -388,19 +649,21 @@ class Nepactive(object):
         from nepactive import _migrate_stable_config
         data = _migrate_stable_config(data)
         if self.shock_run:
+            sampling_cfg = self._sampling_general_config(data)
+            current_sampling_cfg = self._sampling_general_config(self.idata)
             if os.path.exists(f"{os.path.dirname(file)}/nostrucnum"):
                 data.setdefault("init", {})["struc_num"] = 0
                 data["structure_files"] = self.idata.get("structure_files",["POSCAR"])
-                data["model_devi_general"][0]["structure_id"] = self.idata["model_devi_general"][0].get("structure_id",[[0]])
-                data["model_devi_general"][0]["ensemble"] = ["nphugo_scr","nvt"]
-                data["model_devi_general"][0]["temperature"] = [3000]
-                data["model_devi_general"][0]["structure_id"] = [[0],[0]]
+                sampling_cfg["structure_id"] = current_sampling_cfg.get("structure_id", [[0]])
+                sampling_cfg["ensemble"] = ["nphugo_scr","nvt"]
+                sampling_cfg["temperature"] = [3000]
+                sampling_cfg["structure_id"] = [[0],[0]]
             else:
                 data.setdefault("init", {})["struc_num"] = 1
                 data["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
-                data["model_devi_general"][0]["ensemble"] = ["nphugo_scr","nvt"]
-                data["model_devi_general"][0]["temperature"] = [3000]
-                data["model_devi_general"][0]["structure_id"] = [[0,1],[0,1]]
+                sampling_cfg["ensemble"] = ["nphugo_scr","nvt"]
+                sampling_cfg["temperature"] = [3000]
+                sampling_cfg["structure_id"] = [[0,1],[0,1]]
         else:
             self.idata.setdefault("init", {})["struc_num"] = 0
         return data
@@ -452,11 +715,11 @@ class Nepactive(object):
                     elif jj == 2:
                         self.post_nep_train()
                     elif jj == 3:
-                        self.make_model_devi()
+                        self.make_sampling()
                     elif jj == 4:
                         self.run_model_devi()
                     elif jj == 5:
-                        self.post_gpumd_run()
+                        self.post_sampling_run()
                     elif jj == 6:
                         self.make_label_task()
                     elif jj == 7:
@@ -542,10 +805,11 @@ class Nepactive(object):
             structure_files = [os.path.abspath(self.idata.get("structure_files")[0])]
         else:
             structure_files = []
-        final_xyzs = glob(f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd/task.[0-9][0-9][0-9][0-9][0-9][0-9]/final.xyz")
+        sampling_dir = self._sampling_dir(self.ii, prefer_existing=True)
+        final_xyzs = glob(f"{sampling_dir}/task.[0-9][0-9][0-9][0-9][0-9][0-9]/final.xyz")
         final_xyzs.sort()
         if not final_xyzs:
-            raise FileNotFoundError(f"No final.xyz found under iter.{self.ii:06d}/01.gpumd/task.*")
+            raise FileNotFoundError(f"No final.xyz found under {sampling_dir}/task.*")
         final_xyz = final_xyzs[-1]
         structure_files.append(final_xyz)
         shock_data["structure_files"] = structure_files
@@ -619,6 +883,8 @@ class Nepactive(object):
         pot_num = self.idata.get("pot_num", self.idata.get("pot_number", 4))
         pot_inherit: bool = self.idata.get("pot_inherit", True)
         self.gpu_available = self.idata.get("gpu_available")
+        if not self.gpu_available:
+            raise ValueError("gpu_available is missing or empty in in.yaml")
         processes = []
         log_files = []  # ✅ 添加log_files列表
         
@@ -639,15 +905,14 @@ class Nepactive(object):
                     os.symlink("../dataset/train.xyz", "train.xyz")
                 if not os.path.isfile("test.xyz"):
                     os.symlink("../dataset/test.xyz", "test.xyz")
-                if not os.path.isfile("nep.in"):
-                    nep_in_header = self.idata.get("nep_in_header", "type 4 H C N O")
-                    if self.ii == 0:
-                        ini_train_steps = self.idata.get("ini_train_steps", 10000)
-                        nep_in = nep_in_template.format(train_steps=ini_train_steps, nep_in_header=nep_in_header)
-                    else:
-                        nep_in = nep_in_template.format(train_steps=train_steps, nep_in_header=nep_in_header)
-                    with open("nep.in", "w") as f:
-                        f.write(nep_in)
+                nep_in_header = self._resolve_nep_in_header(jj, pot_inherit=pot_inherit)
+                if self.ii == 0:
+                    ini_train_steps = self.idata.get("ini_train_steps", 10000)
+                    nep_in = nep_in_template.format(train_steps=ini_train_steps, nep_in_header=nep_in_header)
+                else:
+                    nep_in = nep_in_template.format(train_steps=train_steps, nep_in_header=nep_in_header)
+                with open("nep.in", "w", encoding="utf-8") as f:
+                    f.write(nep_in)
                 
                 if pot_inherit and self.ii > 0:
                     nep_restart = f"{self.work_dir}/iter.{self.ii-1:06d}/00.nep/task.{jj:06d}/nep.restart"
@@ -940,10 +1205,11 @@ class Nepactive(object):
         work_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
         structure_files:list = self.idata.get("structure_files")
         structure_prefix = self.idata.get("structure_prefix",self.work_dir)
-        time_step_general = self.idata.get("model_devi_time_step", None)
+        sampling_cfg = self._sampling_config(self.idata)
+        time_step_general = sampling_cfg.get("time_step", None)
         structure_files = [os.path.join(structure_prefix,structure_file) for structure_file in structure_files]
         nep_file = self.idata.get("nep_file","../../00.nep/task.000000/nep.txt")
-        needed_frames = self.idata.get("needed_frames",10000)
+        needed_frames = sampling_cfg.get("needed_frames",10000)
         self.run_steps_factor = self.idata.get("run_steps_factor",1.5)
         if self.ii == 0:
             run_steps = self.idata.get("ini_run_steps",100000)
@@ -981,6 +1247,9 @@ class Nepactive(object):
         pperiod = model_devi.get("pperiod", 2000)
         self.total_time, self.model_devi_task_numbers = Nepactive.make_gpumd_task(model_devi=model_devi, structure_files=structure_files, needed_frames=needed_frames,time_step_general=time_step_general,
                                                                                    work_dir=work_dir,nep_file=nep_file, run_steps=run_steps,e0=e0, p0=p0,v0 =v0, pperiod=pperiod)
+
+    def make_sampling(self):
+        return self.make_model_devi()
 
     @classmethod
     def make_gpumd_task(cls, model_devi:dict, structure_files, needed_frames=10000, time_step_general=0.2, work_dir:str=None, 
@@ -1115,7 +1384,9 @@ class Nepactive(object):
         model_devi_dir = f"{self.work_dir}/iter.{self.ii:06d}/01.gpumd"
         os.chdir(model_devi_dir)
         gpu_available = self.idata.get("gpu_available")
-        self.task_per_gpu = self.idata.get("task_per_gpu")
+        if not gpu_available:
+            raise ValueError("gpu_available is missing or empty in in.yaml")
+        self.task_per_gpu = self.idata.get("task_per_gpu", 1)
 
         Nepactive.run_gpumd_task(work_dir=model_devi_dir, gpu_available=gpu_available, task_per_gpu=self.task_per_gpu)
         # self.write_steps()
@@ -1129,36 +1400,9 @@ class Nepactive(object):
         '''
         get the model deviation from the gpumd run
         '''
-        # dlog.info(f"self.idata:{self.idata}")
-        model_devi_general:list[dict] = self.idata.get("model_devi_general", None)
-        # dlog.info(f"model_devi_general:{model_devi_general}")
-        if os.path.exists(os.path.join(self.work_dir, "model_devi_general.txt")):
-            file = os.path.join(self.work_dir, "model_devi_general.txt")
-            with open(file, mode='r') as f:
-                txt = f.read().strip()
-            if txt:
-                self.model_devi_general_id = int(float(txt.split()[-1]))
-            else:
-                self.model_devi_general_id = 0
-            id_file = os.path.join(self.work_dir, "model_devi_general_id.txt")
-            if os.path.exists(id_file):
-                self.model_devi_general_id = int(np.loadtxt(id_file, dtype=int, ndmin=1)[-1])
-        else:
-            self.model_devi_general_id = 0
-        
-        # if self.model_devi_general_id >= len(model_devi_general):
-        #     dlog.info(f"finished")
-            # exit()
-        
-        if not model_devi_general:
-            raise ValueError("model_devi_general is empty in config")
-        if self.model_devi_general_id >= len(model_devi_general):
-            raise IndexError(
-                f"model_devi_general_id={self.model_devi_general_id} out of range "
-                f"for {len(model_devi_general)} entries"
-            )
-        model_devi = model_devi_general[self.model_devi_general_id]
-
+        model_devi = self._sampling_general_config(self.idata)
+        if not model_devi:
+            raise ValueError("sampling.general is empty in config")
         return model_devi
 
     def post_gpumd_run(self):
@@ -1202,11 +1446,15 @@ class Nepactive(object):
         # 更新步数和状态
         self._finalize_iteration(config)
 
+    def post_sampling_run(self):
+        return self.post_gpumd_run()
+
     def _get_cached_config(self):
         """一次性获取所有配置，避免重复查询"""
         model_devi = self.get_model_devi()
-        threshold = model_devi.get("uncertainty_threshold") or self.idata.get("uncertainty_threshold", [0.3, 1])
-        energy_threshold = self.idata.get("energy_threshold", float("inf"))
+        sampling_cfg = self._sampling_config(self.idata)
+        threshold = model_devi.get("uncertainty_threshold") or sampling_cfg.get("uncertainty_threshold", [0.3, 1])
+        energy_threshold = sampling_cfg.get("energy_threshold", float("inf"))
         if energy_threshold is None:
             energy_threshold = float("inf")
         
@@ -1214,11 +1462,14 @@ class Nepactive(object):
             'plot': self.idata.get("gpumd_plt", True),
             'threshold': threshold,
             'energy_threshold': energy_threshold,
-            'mode': self.idata.get("uncertainty_mode", "mean"),
-            'level': self.idata.get("uncertainty_level", 1),
-            'sample_method': self.idata.get("sample_method", "relative"),
+            'mode': sampling_cfg.get("uncertainty_mode", "mean"),
+            'level': sampling_cfg.get("uncertainty_level", 1),
+            'deviation_backend': sampling_cfg.get("deviation_backend", "auto"),
+            'enable_molecule_analysis': sampling_cfg.get("enable_molecule_analysis", False),
+            'molecule_analysis_backend': sampling_cfg.get("molecule_analysis_backend", "ase"),
+            'sample_method': sampling_cfg.get("method", "relative"),
             'continue_from_old': self.idata.get("continue_from_old", False),
-            'max_candidate': self.idata.get("max_candidate", 1000),
+            'max_candidate': sampling_cfg.get("max_candidate", 1000),
             'max_temp': self.idata.get("max_temp", 10000),
             'shortest_d': self.idata.get("shortest_d", 0.5),
             'analyze_range': self.idata.get("analyze_range", [0.5, 1.0]),
@@ -1231,7 +1482,7 @@ class Nepactive(object):
         task_count = len(self._get_cached_task_dirs())
         if task_count == 0:
             raise ValueError(f"No GPUMD task dirs found under {self.work_dir}/iter.{self.ii:06d}/01.gpumd")
-        config['max_candidate_per_task'] = max(1, config['max_candidate'] // task_count)
+        config['max_candidate_per_task'] = max(1, min(config['max_candidate'], 2 * ceil(config['max_candidate'] / task_count)))
         config['summary'] = f"threshold:{threshold}, energy_threshold:{energy_threshold}, max_temp:{config['max_temp']}"
         dlog.info(f"Config summary: {config['summary']}")
         return config
@@ -1268,127 +1519,131 @@ class Nepactive(object):
 
     def _optimized_task_processing(self, task_dirs, nep_dir, config):
         """优化的任务处理循环"""
-        # 预分配结果容器
         results = {
             'failed_indices': [],
             'thermo_averages': [],
             'all_candidates': [],
-            'statistics': {'accurate': 0, 'candidate': 0, 'total': 0}
+            'statistics': {'accurate': 0, 'candidate': 0, 'total': 0},
         }
-        
-        # 预先创建输出目录和文件
+
         label_dir = os.path.join(self.iter_dir, "02.label")
         os.makedirs(label_dir, exist_ok=True)
         candidate_file = os.path.join(label_dir, "candidate.xyz")
         if os.path.exists(candidate_file):
             os.remove(candidate_file)
-        
-        # 预计算条件函数，避免在循环中重复创建
+
         def make_candidate_condition(frame_prop):
             return (
-                ((frame_prop[:, 1] >= config['threshold'][0]) & 
-                (frame_prop[:, 1] <= config['threshold'][1])) |
-                (frame_prop[:, 2] > config['energy_threshold'])
-            ) & (frame_prop[:, 3] > config['shortest_d']) & (frame_prop[:, 4] < config['max_temp'])
-            
-        
+                (
+                    ((frame_prop[:, 1] >= config['threshold'][0]) & (frame_prop[:, 1] <= config['threshold'][1]))
+                    | (frame_prop[:, 2] > config['energy_threshold'])
+                )
+                & (frame_prop[:, 3] > config['shortest_d'])
+                & (frame_prop[:, 4] < config['max_temp'])
+            )
+
+        def make_fps_condition(frame_prop):
+            return (frame_prop[:, 3] > config['shortest_d']) & (frame_prop[:, 4] < config['max_temp'])
+
         def make_accurate_condition(frame_prop):
             return (frame_prop[:, 1] < config['threshold'][0]) & (frame_prop[:, 2] < config['energy_threshold'])
-        
-        # 格式化字符串预定义
 
-        fmt = "%14d"+"%12.2f"*9+"%12.4f"
+        fmt = "%14d" + "%12.2f" * 9 + "%12.4f"
         header = f"{'indices':>14} {'time':^14} {'relative_error':^14} {'energy_error':^14} {'shortest_d':^14} {'temperature':^14} {'potential':^14} {'pressure':^14} {'volume':^14} {'molecule_num':^14} {'molecule_density':^14}"
-        
-        # 主循环优化
+
         current_dir = os.getcwd()
         analyze_start = config['analyze_range'][0]
         analyze_end = config['analyze_range'][1]
-        
-        # 预先打开候选文件以追加模式写入
-        with open(candidate_file, 'w') as candidate_f:
-            for ii, task_dir in enumerate(task_dirs):
-                # try:
-                os.chdir(task_dir)
-                dlog.info(f"processing task {ii}")
-                
-                # 核心计算（这部分您说很快）
+
+        candidate_records: list[dict] = []
+        open(candidate_file, 'w', encoding='utf-8').close()
+        for ii, task_dir in enumerate(task_dirs):
+            os.chdir(task_dir)
+            dlog.info(f"processing task {ii}")
+            try:
                 atoms_list, frame_property, failed_row_index = Nepactive.relative_force_error(
-                    total_time=self.total_time, 
-                    nep_dir=nep_dir, 
+                    total_time=self.total_time,
+                    nep_dir=nep_dir,
                     mode=config['mode'],
-                    level=config['level'], 
-                    allowed_max_temp=config['max_temp'], 
-                    allowed_shortest_distance=config['shortest_d']
+                    level=config['level'],
+                    backend=config['deviation_backend'],
+                    enable_molecule_analysis=config['enable_molecule_analysis'],
+                    molecule_analysis_backend=config['molecule_analysis_backend'],
+                    allowed_max_temp=config['max_temp'],
+                    allowed_shortest_distance=config['shortest_d'],
                 )
-                
-                # 快速保存最后一帧
+
                 write_extxyz(os.path.join(task_dir, "final.xyz"), atoms_list[-1])
-                
-                # 优化：预计算数组切片
+
                 prop_len = len(frame_property)
                 start_idx = int(analyze_start * prop_len)
                 end_idx = int(analyze_end * prop_len)
-                
-                # 热力学平均值计算
                 thermo_avg = np.mean(frame_property[start_idx:end_idx, 1:], axis=0, keepdims=True)
 
-                p_rmse = np.sqrt(np.mean((frame_property[start_idx:end_idx, 6]-thermo_avg[0,5])**2))
-                p_mae = np.mean(np.abs(frame_property[start_idx:end_idx, 6]-thermo_avg[0,5]))
-                p_rmse = p_rmse.reshape(-1, 1)
-                p_mae = p_mae.reshape(-1, 1)
-                thermo_avg = np.hstack((thermo_avg, p_rmse, p_mae))
-                
+                p_rmse = np.sqrt(np.mean((frame_property[start_idx:end_idx, 6] - thermo_avg[0, 5]) ** 2))
+                p_mae = np.mean(np.abs(frame_property[start_idx:end_idx, 6] - thermo_avg[0, 5]))
+                thermo_avg = np.hstack((thermo_avg, np.array([[p_rmse, p_mae]])))
                 results['thermo_averages'].append(thermo_avg)
-                
-                # 使用预定义的条件函数
-                candidate_condition = make_candidate_condition(frame_property)
+
+                if config['sample_method'] == "fps":
+                    candidate_condition = make_fps_condition(frame_property)
+                    accurate_count = 0
+                else:
+                    candidate_condition = make_candidate_condition(frame_property)
+                    accurate_condition = make_accurate_condition(frame_property)
+                    accurate_count = int(np.sum(accurate_condition))
+
                 candidate_indices = np.where(candidate_condition)[0]
-                
-                accurate_condition = make_accurate_condition(frame_property)
-                accurate_count = np.sum(accurate_condition)
-                
-                # 更新统计信息
                 results['statistics']['accurate'] += accurate_count
                 results['statistics']['candidate'] += len(candidate_indices)
                 results['statistics']['total'] += prop_len
                 results['failed_indices'].append(failed_row_index)
-                
-                # 候选帧处理优化
-                if len(candidate_indices) > 0:
-                    # 使用高级索引一次性获取数据
-                    filtered_rows = frame_property[candidate_indices]
-                    indices_with_data = np.column_stack((candidate_indices, filtered_rows))
 
-                    dlog.info(f"Task {ii} has {len(indices_with_data)} candidates before filtering from failed index")
-                    mask = np.arange(indices_with_data.shape[0]) < failed_row_index
-                    indices_with_data = indices_with_data[mask]
-                    dlog.info(f"Task {ii} has {len(indices_with_data)} candidates")
+                if len(candidate_indices) == 0:
+                    continue
 
-                    # 选择最佳候选
-                    if len(indices_with_data) > config['max_candidate_per_task']:
-                        # 使用 argpartition 而不是完全排序，更快
-                        n_select = config['max_candidate_per_task']
-                        partition_idx = np.argpartition(indices_with_data[:, 2], -n_select)[-n_select:]
-                        selected_data = indices_with_data[partition_idx]
-                    else:
-                        selected_data = indices_with_data
-                    
-                    # 按索引排序
-                    final_data = selected_data[selected_data[:, 0].argsort()]
-                    
-                    # 批量获取候选原子
-                    selected_indices = final_data[:, 0].astype(int)
-                    candidate_atoms = [atoms_list[idx] for idx in selected_indices]
-                    
-                    # 直接写入文件，避免内存累积
-                    write_extxyz(candidate_f, candidate_atoms)
-                    
-                    # 保存候选数据
-                    np.savetxt(f"candidate_{ii}.txt", final_data, fmt=fmt, header=header, comments=f"_{ii}_")
-                    
-                    os.chdir(current_dir)
-        
+                filtered_rows = frame_property[candidate_indices]
+                indices_with_data = np.column_stack((candidate_indices, filtered_rows))
+                dlog.info(f"Task {ii} has {len(indices_with_data)} candidates before failed-frame trimming")
+                indices_with_data = indices_with_data[indices_with_data[:, 0] < failed_row_index]
+                dlog.info(f"Task {ii} keeps {len(indices_with_data)} candidates before local FPS")
+
+                if len(indices_with_data) == 0:
+                    continue
+
+                if len(indices_with_data) > config['max_candidate_per_task']:
+                    candidate_atoms = [atoms_list[idx] for idx in indices_with_data[:, 0].astype(int)]
+                    selected_local_indices = select_structure_indices(
+                        candidate_atoms,
+                        n_samples=config['max_candidate_per_task'],
+                        **self._sampling_descriptor_kwargs(),
+                    )
+                    selected_data = indices_with_data[np.asarray(selected_local_indices, dtype=int)]
+                else:
+                    selected_data = indices_with_data
+
+                if len(selected_data) == 0:
+                    continue
+
+                final_data = selected_data[selected_data[:, 0].argsort()]
+                selected_indices = final_data[:, 0].astype(int)
+                candidate_atoms = [atoms_list[idx] for idx in selected_indices]
+                candidate_records.append(
+                    {
+                        'task_index': ii,
+                        'data': final_data,
+                        'atoms': candidate_atoms,
+                    }
+                )
+                np.savetxt(f"candidate_{ii}.txt", final_data, fmt=fmt, header=header, comments=f"_{ii}_")
+            finally:
+                os.chdir(current_dir)
+
+        results['final_candidate_count'] = self._write_global_candidate_pool(
+            candidate_records,
+            candidate_file,
+            config['max_candidate'],
+        )
         return results
 
     def _quick_failure_check(self, results, config):
@@ -1403,15 +1658,27 @@ class Nepactive(object):
         
         early_failures = failed_indices < failed_threshold
         if np.any(early_failures):
-            min_failed = np.min(failed_indices)
-            failed_tasks = np.array(self._get_cached_task_dirs())[early_failures]
-            
-            # self.run_steps = int(self.run_steps*min_failed/frame_len)
-            dlog.info(f"Early failures detected at indices {failed_indices[early_failures]}")
-            
+            early_failed_indices = failed_indices[early_failures]
+            early_failed_tasks = np.array(self._get_cached_task_dirs())[early_failures]
+            min_failed = int(np.min(early_failed_indices))
+
+            dlog.info(f"Early failures detected at indices {early_failed_indices}")
+
+            hard_fail_mask = early_failed_indices < 3
+            if np.any(hard_fail_mask):
+                hard_fail_pairs = [
+                    f"{task}(failed_index={int(idx)})"
+                    for task, idx in zip(early_failed_tasks[hard_fail_mask], early_failed_indices[hard_fail_mask])
+                ]
+                raise ValueError(
+                    "Some sampling tasks failed within the first 3 frames, which usually indicates an invalid setup "
+                    "(for example wrong nep_in_header / element order, unstable initial structure, or broken model). "
+                    f"Offending tasks: {', '.join(hard_fail_pairs)}"
+                )
+
             self.handle_bad_job(
-                failed_row_indices=failed_indices[early_failures],
-                failed_task_dirs=failed_tasks
+                failed_row_indices=early_failed_indices,
+                failed_task_dirs=early_failed_tasks,
             )
             self.run_steps = max(22000, int(self.run_steps*min_failed/frame_len), int(self.run_steps/self.run_steps_factor))
             dlog.info(f"Adjusted run_steps to {self.run_steps} for next iteration")
@@ -1467,7 +1734,10 @@ class Nepactive(object):
         os.system(f"rm -rf task.*")
         for ii,failed_row_index in enumerate(failed_row_indices):
             if failed_row_index < 3:
-                raise ValueError(f"the first 4 frames are failed, please check the input of {failed_task_dirs[ii]}")
+                raise ValueError(
+                    f"The first 3 frames already failed in {failed_task_dirs[ii]} (failed_index={int(failed_row_index)}). "
+                    "This usually indicates an invalid setup such as wrong nep_in_header / element order."
+                )
             task_dir = os.path.join(work_dir, f"task.{ii:06d}")
             task_dirs.append(task_dir)
             os.makedirs(task_dir, exist_ok=True)
@@ -1500,32 +1770,48 @@ class Nepactive(object):
         
         os.chdir(work_dir)
         trajs = []
+        shortest_distance_records = []
         for task_dir in task_dirs:
             traj_file = os.path.join(task_dir, "out.traj")
-            traj = read(traj_file, index = ":")
-            trajs.extend(traj)
+            traj = self._load_xyz_structures(traj_file)
+            kept_traj, shortest_distances = self._truncate_atoms_before_shortest_distance_failure(
+                traj,
+                allowed_shortest_distance,
+                f"Rerun task {os.path.basename(task_dir)}",
+            )
+            shortest_distance_records.extend(shortest_distances.tolist())
+            trajs.extend(kept_traj)
             
-        self.max_candidate = self.idata.get("max_candidate", 1000)
-        
-        if len(trajs) > self.max_candidate:
-            # 随机抽取max_candidate个样本
-            random_indices = random.sample(range(len(trajs)), self.max_candidate)
-            random_indices.sort()  # 可选，保持帧的顺序
-            trajs = [trajs[i] for i in random_indices]
-        shortest_distances = [] 
-        for ii, atoms in enumerate(trajs):
-            shortest_distance = get_shortest_distance(atoms)
-            shortest_distances.append(shortest_distance)
-        np.savetxt("shortest_distance.txt", shortest_distances, fmt = "%12.2f")
-        if np.any(np.array(shortest_distances) < allowed_shortest_distance):
-            dlog.error(f"some frames have shortest distance less than {allowed_shortest_distance}")
-            raise ValueError(f"some frames have shortest distance less than {allowed_shortest_distance}")
-
+        sampling_cfg = self._sampling_config(self.idata)
+        self.max_candidate = sampling_cfg.get("max_candidate", 1000)
         label_dir = os.path.join(self.iter_dir, "02.label")
         os.makedirs(label_dir, exist_ok=True)
+        existing_candidates = self._load_xyz_structures(os.path.join(label_dir, "candidate.xyz"))
+
+        candidate_pool = existing_candidates + trajs
+        candidate_pool, _ = self._filter_atoms_by_shortest_distance(
+            candidate_pool,
+            allowed_shortest_distance,
+            "Bad-job rerun candidate pool",
+        )
+        np.savetxt("shortest_distance.txt", np.asarray(shortest_distance_records, dtype=float), fmt="%12.4f")
+        if not candidate_pool:
+            raise ValueError(
+                f"All rerun candidates have shortest distance smaller than {allowed_shortest_distance}"
+            )
+        if len(candidate_pool) > self.max_candidate:
+            reference_atoms = self._load_sampling_reference_structures()
+            selected_indices = select_structure_indices(
+                candidate_pool,
+                n_samples=self.max_candidate,
+                reference_atoms_list=reference_atoms,
+                **self._sampling_descriptor_kwargs(),
+            )
+            candidate_pool = [candidate_pool[i] for i in selected_indices]
+
         os.chdir(label_dir)
-        with open("candidate.xyz", "a") as f:
-            write_extxyz(f, trajs)
+        with open("candidate.xyz", "w", encoding="utf-8") as f:
+            write_extxyz(f, candidate_pool)
 
     def run_pytasks(self, task_dirs):
         """
@@ -1607,7 +1893,18 @@ class Nepactive(object):
                     dlog.error(f"Process in {task_dir} terminated due to timeout")
         
     @classmethod
-    def relative_force_error(cls, total_time, nep_dir = None, mode:str = "mean", level = 1 ,allowed_shortest_distance = 0.5, allowed_max_temp = 10000):
+    def relative_force_error(
+        cls,
+        total_time,
+        nep_dir=None,
+        mode: str = "mean",
+        level=1,
+        backend: str = "auto",
+        enable_molecule_analysis: bool = False,
+        molecule_analysis_backend: str = "ase",
+        allowed_shortest_distance=0.5,
+        allowed_max_temp=10000,
+    ):
         """
         return frame_index dict for accurate, candidate, failed
         the candidate_index may be more than the needed, need to resample
@@ -1627,14 +1924,21 @@ class Nepactive(object):
 
         if not nep_dir:
             nep_dir = os.getcwd()
-        calculator_fs = glob(f"{nep_dir}/**/nep*.txt")
+        if os.path.isfile(nep_dir):
+            calculator_fs = [nep_dir]
+        else:
+            direct_nep = os.path.join(nep_dir, "nep.txt")
+            if os.path.isfile(direct_nep):
+                calculator_fs = [direct_nep]
+            else:
+                calculator_fs = glob(f"{nep_dir}/**/nep*.txt", recursive=True)
         if not calculator_fs:
             raise FileNotFoundError(f"No NEP model found under: {nep_dir}")
         atoms_list = read(f"dump.xyz", index = ":")
         
 
 
-        f_lists = force_main(atoms_list, calculator_fs)
+        f_lists = force_main(atoms_list, calculator_fs, backend=backend)
         property_list = []
         time_list = np.linspace(0, total_time, len(atoms_list), endpoint=False)/1000
         for ii,atoms in tqdm(enumerate(atoms_list)):
@@ -1656,12 +1960,22 @@ class Nepactive(object):
         property_list_np = np.array(property_list)
         thermo = np.loadtxt("thermo.out")
         thermo_new = compute_volume_from_thermo(thermo)[:,[0,2,3,-1]]
-        molecule_data = analyze_trajectory("dump.xyz", index=":").fillna(0)
-        molecule_num = molecule_data.sum(axis=1).to_numpy()-molecule_data.iloc[:,0].to_numpy()
-        frame_count = min(len(atoms_list), len(time_list), len(property_list_np), len(thermo_new), len(molecule_num))
+        if enable_molecule_analysis:
+            if molecule_analysis_backend != "ase":
+                raise ValueError(
+                    f"Unsupported molecule_analysis_backend: {molecule_analysis_backend}. "
+                    "Currently only 'ase' is implemented."
+                )
+            molecule_data = analyze_trajectory("dump.xyz", index=":").fillna(0)
+            molecule_num = molecule_data.sum(axis=1).to_numpy() - molecule_data.iloc[:, 0].to_numpy()
+            frame_count = min(len(atoms_list), len(time_list), len(property_list_np), len(thermo_new), len(molecule_num))
+        else:
+            molecule_data = None
+            molecule_num = None
+            frame_count = min(len(atoms_list), len(time_list), len(property_list_np), len(thermo_new))
         if frame_count == 0:
             raise ValueError("No frame data found when post-processing dump.xyz/thermo.out")
-        if len(property_list_np) != len(thermo_new) or len(thermo_new) != len(molecule_num):
+        if enable_molecule_analysis and (len(property_list_np) != len(thermo_new) or len(thermo_new) != len(molecule_num)):
             dlog.warning(
                 "frame count mismatch: atoms=%d, properties=%d, thermo=%d, molecules=%d; truncating to %d frames",
                 len(atoms_list),
@@ -1675,13 +1989,19 @@ class Nepactive(object):
         property_list_np = property_list_np[:frame_count]
         thermo = thermo[:frame_count]
         thermo_new = thermo_new[:frame_count]
-        molecule_data = molecule_data.iloc[:frame_count].copy()
-        molecule_num = molecule_num[:frame_count]
         frame_property = np.concatenate((property_list_np,thermo_new),axis=1)
-        molecule_density = molecule_num / frame_property[:,7]
+        if enable_molecule_analysis:
+            molecule_data = molecule_data.iloc[:frame_count].copy()
+            molecule_num = molecule_num[:frame_count]
+        else:
+            molecule_num = np.zeros(frame_count, dtype=float)
+            molecule_density = np.zeros(frame_count, dtype=float)
+        if enable_molecule_analysis:
+            molecule_density = molecule_num / frame_property[:,7]
         frame_property = np.hstack((frame_property, molecule_num.reshape(-1, 1)))
         frame_property = np.hstack((frame_property, molecule_density.reshape(-1, 1)))
-        molecule_data.to_csv("molecule_data.csv")
+        if enable_molecule_analysis:
+            molecule_data.to_csv("molecule_data.csv")
 
         temperatures = thermo[:,0]
         shortest_distances = frame_property[:,3]
@@ -1697,7 +2017,7 @@ class Nepactive(object):
         np.savetxt("frame_property.txt", frame_property, fmt = fmt, header = header)
         
         if first_row_index != len(frame_property):
-            new_total_time = time_list[first_row_index-1]*1000
+            new_total_time = 0.0 if first_row_index == 0 else time_list[first_row_index-1]*1000
             dlog.warning(f"thermo.out has temperature > {allowed_max_temp} K or shortest distance < {allowed_shortest_distance} too early at frame {first_row_index}({new_total_time} ps), the gpumd task should be rerun")
             np.savetxt(f"failed_index.txt", [first_row_index], fmt="%12d")
             return atoms_list, frame_property, first_row_index
@@ -1726,10 +2046,31 @@ class Nepactive(object):
         atoms_list = read("candidate.xyz", index=":", format="extxyz")
         self.pot_file = self.idata.get("pot_file")
         # 创建MatterSimCalculator对象，用于计算原子能量
-        Nepactive.run_mattersim(atoms_list=atoms_list, pot_file=self.pot_file, train_ratio=train_ratio)
+        sampling_cfg = self._sampling_config(self.idata)
+        Nepactive.run_mattersim(
+            atoms_list=atoms_list,
+            pot_file=self.pot_file,
+            train_ratio=train_ratio,
+            sampling_method=sampling_cfg.get("dataset_method", "fps"),
+            sampling_nep_file=sampling_cfg.get("dataset_nep_file", self.idata.get("nep_file")),
+            sampling_descriptor=sampling_cfg.get("dataset_descriptor", "auto"),
+            sampling_min_dist=sampling_cfg.get("dataset_min_dist", 0.0),
+            sampling_backend=sampling_cfg.get("dataset_backend", "auto"),
+        )
 
     @classmethod
-    def run_mattersim(cls, atoms_list:List[Atoms], pot_file:str, train_ratio:float=0.8,tqdm_use:Optional[bool]=True):
+    def run_mattersim(
+        cls,
+        atoms_list: List[Atoms],
+        pot_file: str,
+        train_ratio: float = 0.8,
+        tqdm_use: Optional[bool] = True,
+        sampling_method: str = "fps",
+        sampling_nep_file: Optional[str] = None,
+        sampling_descriptor: str = "auto",
+        sampling_min_dist: float = 0.0,
+        sampling_backend: str = "auto",
+    ):
         calculator = MatterSimCalculator(load_path=pot_file,device="cuda")
         if os.path.exists("candidate.traj"):
             os.remove("candidate.traj")
@@ -1757,16 +2098,19 @@ class Nepactive(object):
         failed:List[Atoms]=[]
         failed_index=[]
         for i in range(len(atoms)):
-            rand=random.random()
             if np.max(np.abs(atoms[i].get_forces())) > 60:
                 failed.append(atoms[i])
                 failed_index.append(i)
-            elif rand <= train_ratio:
-                train.append(atoms[i])
-            elif rand > train_ratio:
-                test.append(atoms[i])
-            else:
-                dlog.warning(f"{atoms[i]}failed to be classified")
+        passed_atoms = [atoms[i] for i in range(len(atoms)) if i not in failed_index]
+        train, test = split_train_test_structures(
+            passed_atoms,
+            training_ratio=train_ratio,
+            method=sampling_method,
+            descriptor_model=sampling_nep_file,
+            descriptor_mode=sampling_descriptor,
+            min_dist=sampling_min_dist,
+            nep_backend=sampling_backend,
+        )
         if train:
             write_extxyz("iter_train.xyz",train)
         if test:

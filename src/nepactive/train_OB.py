@@ -529,7 +529,7 @@ class Nepactive_OB(Nepactive):
             raise FileNotFoundError(f"No final.xyz found under iter.{self.ii:06d}/01.gpumd/task.*")
 
         if original_make:
-            pressures = self.idata.get("model_devi_general", [{}])[0].get("pressure", [])
+            pressures = self.idata.get("sampling", {}).get("general", {}).get("pressure", [])
             pick_index = len(pressures) - 1 if pressures else 0
             pick_index = max(0, min(pick_index, len(final_xyzs) - 1))
             structure_files = [final_xyzs[pick_index]]
@@ -594,16 +594,15 @@ class Nepactive_OB(Nepactive):
                 os.symlink("../dataset/train.xyz","train.xyz")
             if not os.path.isfile("test.xyz"):
                 os.symlink("../dataset/test.xyz","test.xyz")
-            if not os.path.isfile("nep.in"):
-                nep_in_header = self.idata.get("nep_in_header", "type 4 H C N O")
-                if self.ii == 0:
-                    ini_train_steps = self.idata.get("ini_train_steps", 10000)
-                    nep_in = nep_in_template.format(train_steps=ini_train_steps,nep_in_header=nep_in_header)
-                else:
-                    nep_in = nep_in_template.format(train_steps=train_steps,nep_in_header=nep_in_header)
-                with open("nep.in", "w") as f:
-                    f.write(nep_in)
-                # os.symlink(nep_template, "nep.in")
+            nep_in_header = self._resolve_nep_in_header(jj, pot_inherit=pot_inherit)
+            if self.ii == 0:
+                ini_train_steps = self.idata.get("ini_train_steps", 10000)
+                nep_in = nep_in_template.format(train_steps=ini_train_steps,nep_in_header=nep_in_header)
+            else:
+                nep_in = nep_in_template.format(train_steps=train_steps,nep_in_header=nep_in_header)
+            with open("nep.in", "w", encoding="utf-8") as f:
+                f.write(nep_in)
+            # os.symlink(nep_template, "nep.in")
             if pot_inherit and self.ii > 0:
                 nep_restart = f"{self.work_dir}/iter.{self.ii-1:06d}/00.nep/task.{jj:06d}/nep.restart"
                 dlog.info(f"pot_inherit is true, will copy nep.restart from {nep_restart}")
@@ -745,8 +744,8 @@ class Nepactive_OB(Nepactive):
             'work_dir': work_dir,
             'structure_files': structure_files,
             'nep_file': self.idata.get("nep_file", "../../00.nep/task.000000/nep.txt"),
-            'needed_frames': self.idata.get("needed_frames", 10000),
-            'time_step_general': self.idata.get("model_devi_time_step", None),
+            'needed_frames': self.idata.get("sampling", {}).get("needed_frames", 10000),
+            'time_step_general': self.idata.get("sampling", {}).get("time_step", None),
             'OB_gives': self.idata.get("OB_gives", [0]),
             'pperiod': model_devi.get("pperiod", 2000),
             'run_steps': run_steps
