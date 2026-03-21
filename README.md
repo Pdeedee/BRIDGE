@@ -1,243 +1,304 @@
 # nepactive
 
-基于主动学习的含能材料机器学习势函数（NEP）训练与爆轰性能预测工具。通过 NEP + MatterSim 的主动学习闭环，自动完成势函数训练、模型偏差采样、候选结构标注，并持续评估爆速、爆热等爆轰性能。
+`nepactive` 是一个面向含能材料的主动学习工作流，用于 NEP 势函数训练、模型偏差采样、MatterSim/远程标注、爆速测试和爆热计算。
+
+当前仓库的主文档维护在仓库根目录 `README.md`。`src/nepactive/README.md` 仅保留跳转说明。
 
 ## 安装
 
+在仓库根目录执行：
+
 ```bash
-cd nepactive
 pip install -e .
 ```
 
-依赖：ASE 3.23.0, MatterSim, NumPy 1.26.4, GPUMD, Packmol
+当前 `pyproject.toml` 中声明的基础依赖包括：
 
-## 命令行工具
+- `ase==3.23.0`
+- `mattersim`
+- `numpy==1.26.4`
 
-安装后提供三个命令：
+运行完整工作流时还需要根据你的路径启用或安装：
+
+- `GPUMD`
+- `Packmol`
+- 远程 VASP 环境（如果使用 `remote`/VASP 标注）
+
+## 命令行入口
+
+安装后提供以下脚本：
 
 ```bash
-# 主程序
-nepactive              # 运行主动学习闭环
-nepactive --shock      # 爆速测试（多密度）
-nepactive --hod        # 爆热计算（--gpu N 指定GPU）
-nepactive --OB         # 氧平衡工作流
-nepactive --remote     # 远程提交标注任务
+nepactive                 # 默认主动学习主流程
+nepactive shock           # 爆速测试
+nepactive hod --gpu 0     # 爆热计算
+nepactive OB              # 氧平衡工作流
+nepactive remote          # 扫描 remote.dirs 并远程提交
+nepactive mktask          # 从轨迹批量生成 task.*
+nepactive reset           # 清理 task_finished/task_failed
 
-# 独立工具
-nep-identify POSCAR                # 识别结构中的分子组成
-nep-identify dump.xyz --index -1   # 识别轨迹最后一帧
-nep-product POSCAR                 # 生成爆轰产物结构
-nep-product POSCAR --only-solve    # 只求解分子分布，不生成结构
+nep-identify POSCAR
+nep-product POSCAR
 ```
 
-## 主动学习工作流
+也可以直接从源码入口运行：
 
-准备工作目录：
-
+```bash
+python -m nepactive.main
+python -m nepactive.main shock
 ```
+
+## 工作流概览
+
+典型项目目录：
+
+```text
 project/
-├── in.yaml     # 配置文件
-├── POSCAR      # 初始结构
-└── prep/       # VASP 输入文件（远程标注时需要）
+├── in.yaml
+├── POSCAR
+└── prep/
     ├── INCAR
     ├── KPOINTS
     └── POTCAR
 ```
 
-运行 `nepactive` 后自动执行以下循环：
+默认主动学习流程会依次执行：
 
+```text
+init/
+├── 初始结构生成 / 弛豫
+├── 初始数据提取
+└── 初始 train/test 划分
+
+iter.XXXXXX/
+├── 00.nep/     多个 NEP 势并行训练
+├── 01.gpumd/   采样任务
+├── 02.label/   候选结构标注与数据集更新
+└── 03.shock/   爆速测试
 ```
-初始化 (init/)
-├── NVT 弛豫获取初始能量/压力/体积
-├── 随机产物结构生成（Packmol）
-└── 初始数据集提取
 
-迭代 (iter.XXXXXX/)
-├── 00.nep/     NEP 势函数训练（多个并行）
-├── 01.gpumd/   GPUMD 模型偏差采样（多系综/压力/温度）
-├── 02.label/   不确定性分析 → 候选结构选取
-├── 03.shock/   爆速测试（达到条件时）
-└── 标注 → 合并数据 → 下一轮迭代
-```
+## 势函数与 `nep_in_header`
 
-收敛条件：爆速误差低于 `accuracy` 阈值，或达到最大迭代次数。支持断点续传（基于 `record.nep`）。
+### 默认主流程
 
-## 支持的系综
+- 主流程训练和 deviation 分析走 NEP 路径。
+- `shock_vel_test()` 默认使用当前迭代训练得到的 `iter.xxx/00.nep/task.000000/nep.txt`。
 
-| 系综 | 实现 | 说明 |
-|------|------|------|
-| `nphugo` | Nose-Hoover chain (MTTK) | 默认 NPHugo，Hugoniot 约束恒温恒压 |
-| `nphugo_scr` | SCR 气压计 + BDP 恒温器 | 随机胞缩放，参数与 GPUMD 一致 |
-| `nvt` | Berendsen NVT | 恒温采样 |
-| `npt` | MTTK NPT | 恒温恒压 |
+### `nepactive shock`
 
-在 `in.yaml` 中通过 `model_devi_general.ensembles` 或 `stable.ensemble` 选择。
+- `shock` 子命令使用 `in.yaml` 中 `shock.pot` 指定的势函数类型。
+- `shock.pot: mattersim` 走 MatterSim。
+- `shock.pot: nep` 走 NEP；若未显式提供 `shock.nep`，默认使用当前目录 `nep.txt`。
 
-## 爆速测试 (--shock)
-
-支持两种势函数引擎：
+示例：
 
 ```yaml
-stable:
-  shock_pot: "nep"         # GPUMD + NEP（默认）
-  # shock_pot: "mattersim" # MatterSim + ASE
+shock:
+  pot: mattersim   # 或 nep
+  # nep: /path/to/nep.txt
 ```
 
-流程：对 `rhos` 列表中的每个密度，在 `shock_pressure_list` 各压力点运行 NPHugo/NPHugo_SCR，从 Hugoniot 曲线拟合爆速。
+### `nep_in_header` 注意事项
 
-## 爆热计算 (--hod)
-
-对最新迭代的 shock 结果，用 MatterSim 优化最终产物结构，计算 Q = (E_initial - E_final) / mass (kJ/kg)。
-
-## 独立工具
-
-### nep-product：爆轰产物结构生成
-
-从 POSCAR 的元素组成求解可能的爆轰产物分子分布（MILP + 随机搜索），用 Packmol 堆积并用 MatterSim 优化。
-
-```bash
-nep-product POSCAR                        # 默认：求解 + 生成 + 优化
-nep-product POSCAR -n 3 -d 1800           # 每种方案生成 3 个结构，密度 1800 kg/m³
-nep-product POSCAR --only-solve --top-k 20  # 只求解前 20 个方案到 solutions.yaml
-nep-product POSCAR --pdb-dir ./my_pdbs    # 使用自定义分子 PDB 文件
-```
-
-输出两种策略：能量最低方案 + 分子数最多方案，各保留 top-k 个解到 `solutions.yaml`。
-
-支持的产物分子：H2, O2, N2, H2O, CO, CO2, CH4, NH3, CHN。非 CHON 元素（金属等）作为单原子处理。
-
-### nep-identify：分子组成识别
-
-基于共价半径邻居列表 + DFS 连通分量识别结构中的分子。
-
-```bash
-nep-identify POSCAR                       # 识别单帧结构
-nep-identify dump.xyz --index ":"         # 分析整条轨迹
-nep-identify dump.xyz --index "-1"        # 只看最后一帧
-nep-identify POSCAR --mult 0.85           # 调整成键截断系数
-```
-
-输出：分子种类统计、唯一分子 PDB 文件、`molecule_counts.csv`。
-
-## 配置文件 (in.yaml)
-
-### 基本参数
+`nep.in` 的 `type N ...` header 现在支持从多个 `structure_files` 自动推断，但如果你开启：
 
 ```yaml
-project_name: "HMX"
-python_interpreter: "python"
-gpu_available: [0,1,2,3]
+pot_inherit: true
+```
+
+强烈建议显式写死 `nep_in_header`，避免元素顺序变化导致继承旧权重时势函数失真：
+
+```yaml
+nep_in_header: "type 4 H C N O"
+```
+
+当前代码会在 `pot_inherit=True` 且自动推断 header 与上一代 `nep.in` 不一致时直接报错。
+
+## 采样与 FPS
+
+当前代码里，以下路径都已支持用 FPS 替代随机采样：
+
+- 初始 `init` 数据切分
+- 每轮 `max_candidate` 候选池截断
+- MatterSim 标注后的 `iter_train/iter_test` 划分
+- 坏任务重跑后的候选池合并
+
+推荐把主动学习相关参数集中写在 `sampling:` 下：
+
+```yaml
+sampling:
+  method: relative
+  time_step: 0.2
+  needed_frames: 10000
+  max_candidate: 1000
+  max_reference_points: 10000
+
+  uncertainty_threshold: [0.3, 1]
+  uncertainty_level: 1
+  uncertainty_mode: max
+  energy_threshold: 1
+
+  deviation_backend: auto              # auto / native / gpu / cpu
+  enable_molecule_analysis: false
+  molecule_analysis_backend: ase
+
+  init_method: fps
+  init_descriptor: soap                # soap / structural / nep
+  init_min_dist: 0.0
+
+  dataset_method: fps
+  dataset_descriptor: structural       # structural / nep
+  dataset_min_dist: 0.0
+  dataset_backend: auto                # auto / native / gpu / cpu
+  # dataset_nep_file: /path/to/nep.txt
+
+  general:
+    ensembles: [nphugo_scr, nvt]
+    structure_id: [[0, 1], [0, 1]]
+    pressure: [60, 35, 10]
+    pperiod: 2000
+    temperature: [3000]
+```
+
+说明：
+
+- `sampling.dataset_descriptor: structural` 使用内置结构指纹做 FPS，不依赖 `nep.txt`。
+- `sampling.dataset_descriptor: nep` 使用本地 NEP native backend 计算描述符，需要 `sampling.dataset_nep_file`。
+- `sampling.init_descriptor: soap` 用于初始 `init` 数据的 FPS，依赖 `dscribe`。
+- `sampling.max_reference_points` 会先随机截断 reference 集，再做 dataset-aware FPS，避免距离矩阵过大。
+- 一旦轨迹在第 `i` 帧出现异常，候选池只保留 `i` 之前的结构；异常帧及其后的结构不会参与后续 FPS。
+- 合并 `candidate.xyz` 前会再按 `shortest_d` 过滤最短原子距离异常的结构。
+- 如果你想强制暴露后端错误，就显式写 `gpu/cpu/native`，不要用 `auto`。
+
+## 分子识别与后处理
+
+- 默认 `sampling.enable_molecule_analysis: false`，因为整条轨迹做分子识别后处理较慢。
+- 当前 `molecule_analysis_backend` 支持 `ase`。
+- 分子识别本身还可以单独通过 `nep-identify` 使用。
+
+## 本地 NEP CPU/GPU backend
+
+仓库已内置一份本地 native NEP backend 源码与编译脚本，位置：
+
+- `src/nepactive/native_nep/`
+- `src/nepactive/build_native_nep.py`
+
+这是可选组件，不应阻塞主库安装。你可以先安装主库，再按需编译 backend：
+
+```bash
+cd src/nepactive
+python build_native_nep.py build_ext --inplace
+```
+
+成功后会在 `src/nepactive/` 下生成：
+
+- `nep_cpu*.so`
+- `nep_gpu*.so`
+
+然后可在 `in.yaml` 中设置：
+
+```yaml
+sampling:
+  deviation_backend: gpu
+```
+
+或：
+
+```yaml
+sampling:
+  dataset_backend: gpu
+```
+
+## `in.yaml` 结构
+
+当前推荐配置骨架：
+
+```yaml
+project_name: HMX
+yaml_synchro: true
+python_interpreter: python
+
+pot_number: 4
+pot_inherit: true
+ini_train_steps: 10000
+train_steps: 5000
+training_ratio: 0.8
+nep_in_header: "type 4 H C N O"   # 推荐在 pot_inherit=true 时显式给出
+pot_file: /path/to/mattersim.pth
+
+gpu_available: [0, 1, 2, 3]
 task_per_gpu: 1
-time_step: 0.2                    # fs
-accuracy: 1                       # 爆速收敛精度 (%)
-```
+max_temp: 10000
+shortest_d: 0.5
 
-### NEP 训练
+structure_files: ["POSCAR"]
+kpoints_file: prep/KPOINTS
+incar_file: prep/INCAR
+potcar_file: prep/POTCAR
 
-```yaml
-pot_number: 4                     # 并行训练的势函数个数
-pot_inherit: true                 # 继承上一代权重
-ini_train_steps: 10000            # 第一代训练步数
-train_steps: 5000                 # 后续训练步数
-training_ratio: 0.8               # 训练集比例
-pot_file: "/path/to/mattersim.pth"  # MatterSim 模型（标注用）
-```
+sampling:
+  ...
 
-### 主动学习采样
-
-```yaml
-uncertainty_threshold: [0.3, 1]   # 不确定性选取阈值
-uncertainty_mode: "max"           # max 或 mean
-needed_frames: 10000              # 每代保存结构数
-max_candidate: 1000               # 每代最大候选数
-max_run_steps: 1000000            # 最大 MD 步数
-
-model_devi_general:
-  - ensembles: ["nphugo", "nvt"]
-    structure_id: [[0,1], [0,1]]
-    pressure: [60, 35, 10]        # GPa
-    temperature: [3000]           # K
-    pperiod: 2000                 # 压浴周期（步数）
-```
-
-### 爆速测试 (stable 段)
-
-```yaml
-stable:
-  structure: "POSCAR"
-  # ensemble: "nphugo"            # 可选 nphugo / nphugo_scr / nvt / npt
-  # shock_pot: "nep"              # nep（默认）或 mattersim
-
-  # 初始数据集参数
+init:
   struc_num: 1
-  pressure: [20, 40, 60, 80]     # GPa
-  temperature: [3000]             # K
+  pressure: [20, 40, 60, 80]
+  temperature: [3000]
   steps: 40000
+  time_step: 0.2
   dump_freq: 10
 
-  # 爆速测试参数
-  shock_pressure_list: [20,25,30,35,40,45,50,55]  # GPa
-  shock_steps: 600000
-  analyze_range: [0.5, 1]
+shock:
+  structure: POSCAR
+  pressure_list: [20, 25, 30, 35, 40, 45, 50, 55]
+  steps: 100000
+  time_step: 0.4
+  dump_freq: 10
+  analyze_range: [0.8, 1]
+  pot: mattersim
 
-  # Nose-Hoover (MTTK) 参数（ensemble="nphugo"）
-  # tfreq: 0.025                  # 恒温器频率（无量纲）
-  # pfreq:                        # 气压计频率（默认 1/400/dt）
-
-  # SCR 参数（ensemble="nphugo_scr"，与 GPUMD 输入一致）
-  # tau_t: 100                    # BDP 恒温器弛豫时间（timestep 单位）
-  # tau_p: 2000                   # SCR 气压计弛豫时间（timestep 单位）
-  # pmode: "iso"                  # iso / x / y / z
-
-rhos: [1.62, 1.65, 1.68, 1.70, 1.72]  # 爆速测试密度列表 (g/cm³)
+remote:
+  dirs: ["."]
+  fp_command: mpirun -np 96 vasp_std
+  ssh_username: user@cluster
+  ssh_hostname: login.cluster.com
+  ssh_port: 22
+  remote_root: /path/to/remote/workspace
 ```
 
-### 远程计算
+## 其他工具
 
-```yaml
-fp_command: "mpirun -np 96 vasp_std"
-ssh_username: "user@cluster"
-ssh_hostname: "login.cluster.com"
-ssh_port: 22
-remote_root: "/path/to/remote/workspace"
-slurm_header_script:
-  - "#!/bin/bash"
-  - "#SBATCH --job-name=vasp"
-  - "#SBATCH -N 1"
-  - "#SBATCH -n 96"
+### `nep-product`
+
+用于根据元素组成求解可能的爆轰产物分布，并生成 Packmol 初始结构。
+
+### `nep-identify`
+
+用于基于邻居关系识别结构或轨迹中的分子组成。
+
+## NepTrainKit 引用与许可证说明
+
+本仓库中的部分采样思路、NEP backend 集成方向及相关实现参考了 `NepTrainKit`：
+
+- 仓库：`https://github.com/aboys-cb/NepTrainKit`
+- 许可证：`GNU General Public License v3.0 or later (GPL-3.0-or-later)`
+
+如果你在本仓库中继续复用、分发或修改这些参考/移植的 GPL 代码，需要遵守 GPL 的分发义务，并保留相应版权与许可证声明。
+
+建议在学术使用中同时引用 NepTrainKit：
+
+```bibtex
+@article{CHEN2025109859,
+  title = {NepTrain and NepTrainKit: Automated active learning and visualization toolkit for neuroevolution potentials},
+  journal = {Computer Physics Communications},
+  volume = {317},
+  pages = {109859},
+  year = {2025},
+  issn = {0010-4655},
+  doi = {10.1016/j.cpc.2025.109859},
+  author = {Chengbing Chen and Yutong Li and Rui Zhao and Zhoulin Liu and Zheyong Fan and Gang Tang and Zhiyong Wang}
+}
 ```
 
-## 输出文件
+## 其他文档
 
-```
-project/
-├── nepactive.log          # 运行日志
-├── record.nep             # 迭代记录（断点续传依据）
-├── shock_vel.txt          # 爆速结果
-├── init/
-│   ├── properties.txt     # 初始 ρ, E, P, V, N
-│   └── struc.000/         # 生成的产物结构
-├── iter.000000/
-│   ├── 00.nep/task.*/nep.txt    # 训练好的势函数
-│   ├── 01.gpumd/task.*/         # MD 轨迹 + 热力学数据
-│   └── 03.shock/                # 爆速测试结果
-└── ...
-```
-
-## 常见问题
-
-**训练中断了？** 直接重新运行 `nepactive`，会从 `record.nep` 记录的位置继续。删除 `record.nep` 可重新开始。
-
-**不用远程 VASP？** 不配置 SSH 参数即可，标注会使用 MatterSim。
-
-**纯金属体系？** 自动识别非 CHON 元素并作为单原子处理。
-
-**内存不足？** 减小 `task_per_gpu`、`pot_number` 或 `max_candidate`。
-
-## 参考文献
-
-- GPUMD: Fan et al., J. Chem. Phys. 157, 114801 (2022)
-- NEP: Fan et al., Phys. Rev. B 104, 104309 (2021)
-- MatterSim: Yang et al., arXiv:2405.04967 (2024)
-- SCR barostat: Bernetti & Bussi, J. Chem. Phys. 153, 114107 (2020)
-- BDP thermostat: Bussi, Donadio & Parrinello, J. Chem. Phys. 126, 014101 (2007)
+- `src/nepactive/README_product.md`：产物求解与结构生成说明

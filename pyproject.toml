@@ -9,6 +9,7 @@ description = "Extreme condition MLP"
 authors = [
     {name = "Liu Zifeng", email = "e1146670434@163.com"}
 ]
+license = {file = "LICENSE"}
 keywords = ["keywords relating to your package"]
 dependencies = [
     "ase==3.23.0",
