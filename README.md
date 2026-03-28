@@ -6,11 +6,30 @@
 
 ## 安装
 
+### 基础安装
+
 在仓库根目录执行：
 
 ```bash
 pip install -e .
 ```
+
+安装完成后，`pyproject.toml` 中注册的命令行入口会直接可用：
+
+```bash
+nepactive
+nep-identify
+nep-product
+nep-fps
+```
+
+如果你刚拉取到最新代码，尤其是新增了命令行入口例如 `nep-fps`，需要重新执行一次：
+
+```bash
+pip install -e .
+```
+
+否则新的 console script 不会出现在当前环境里。
 
 当前 `pyproject.toml` 中声明的基础依赖包括：
 
@@ -18,11 +37,29 @@ pip install -e .
 - `mattersim`
 - `numpy==1.26.4`
 
-运行完整工作流时还需要根据你的路径启用或安装：
+### 可选依赖
+
+运行完整工作流时还需要根据你的实际路径启用或安装：
 
 - `GPUMD`
 - `Packmol`
 - 远程 VASP 环境（如果使用 `remote`/VASP 标注）
+
+### 本地 NEP backend 编译
+
+如果你要使用本地 `nep89` ASE 势或者更快的本地 NEP 描述符/偏差分析后端，可以按需编译 native backend：
+
+```bash
+cd src/nepactive
+python build_native_nep.py build_ext --inplace
+```
+
+编译成功后会在 `src/nepactive/` 下生成本地扩展，例如：
+
+- `nep_cpu*.so`
+- `nep_gpu*.so`
+
+这一步是可选的；主库安装不应该依赖它强制成功。
 
 ## 命令行入口
 
@@ -148,17 +185,43 @@ nep_in_header: "type 4 H C N O"
 
 当前代码里，以下路径都已支持用 FPS 替代随机采样：
 
-- 也可以直接用命令行工具从任意轨迹/多结构文件中做 FPS：
-
-```bash
-nep-fps structurefile --number 2000
-nep-fps structurefile --r2 0.95
-```
-
 - 初始 `init` 数据切分
 - 每轮 `max_candidate` 候选池截断
-- MatterSim 标注后的 `iter_train/iter_test` 划分
+- `02.label` 后的数据集划分
 - 坏任务重跑后的候选池合并
+
+### `nep-fps`
+
+`nep-fps` 是一个独立命令行工具，用来从单个结构文件、轨迹文件或多结构 `xyz/extxyz` 中做 farthest point sampling，输出一个代表性子集。
+
+常见用法：
+
+```bash
+nep-fps dump.xyz --number 2000
+nep-fps dump.xyz --r2 0.95
+nep-fps dump.xyz --number 500 --reference train.xyz
+nep-fps dump.xyz --index '0:1000:5' --output selected.xyz
+```
+
+主要参数：
+
+- `--number`：最多保留多少个结构。
+- `--r2`：达到指定覆盖度后提前停止，不必选满 `--number`。
+- `--output`：输出文件名，默认 `fps_selected.xyz`。
+- `--index`：ASE 风格切片，例如 `:`、`0:1000:5`。
+- `--descriptor`：描述符类型，支持 `structural`、`nep`、`soap`、`auto`。
+- `--model`：当 `--descriptor nep` 时指定 `nep.txt/nep89` 模型文件。
+- `--backend`：NEP 描述符后端，支持 `auto`、`gpu`、`cpu`、`native`。
+- `--reference`：给定一个已覆盖的数据集，新的 FPS 会相对这份 reference 继续挑点，而不是只在当前输入里做局部去重。
+- `--reference-index`：reference 文件的 ASE 风格切片。
+- `--min-dist`：最小距离阈值，小于该值时提前停止。
+
+输出内容：
+
+- 一个筛选后的结构文件，默认 `fps_selected.xyz`
+- 终端摘要，包括选中数、总结构数、描述符类型、reference 点数、R2 和被选中的 frame 索引
+
+这个工具适合单独分析轨迹，也适合在主动学习之外手动压缩数据集。
 
 推荐把主动学习相关参数集中写在 `sampling:` 下：
 
@@ -222,7 +285,7 @@ sampling:
 - `src/nepactive/native_nep/`
 - `src/nepactive/build_native_nep.py`
 
-这是可选组件，不应阻塞主库安装。你可以先安装主库，再按需编译 backend：
+如果你已经完成上面的基础安装，这里只需要额外执行编译步骤，不需要重新手动拼装 Python 包：
 
 ```bash
 cd src/nepactive
