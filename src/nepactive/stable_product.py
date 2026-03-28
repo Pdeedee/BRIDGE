@@ -15,6 +15,7 @@ class MolecularSolverOptimized:
         
         # 定义分子及其原子组成 [C, H, O, N]
         self.molecules = {
+            'C2H2': [2, 2, 0, 0],
             'CH4': [1, 4, 0, 0],
             'CO': [1, 0, 1, 0],
             'CO2': [1, 0, 2, 0],
@@ -26,6 +27,7 @@ class MolecularSolverOptimized:
         }
 
         self.molecule_energies = {
+            'C2H2': -23.141634,
             'CO': -14.747749,
             'NH3': -19.33091,
             'O2': -9.876768,

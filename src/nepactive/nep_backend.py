@@ -8,8 +8,84 @@ from typing import Iterable
 
 import numpy as np
 from ase import Atoms
+from ase.calculators.calculator import Calculator, all_changes
 
 from nepactive import dlog
+
+
+DEFAULT_NEP89_RESOURCE_NAME = "nep89_20250409.txt"
+SUPPORTED_ASE_MODELS = ("mattersim", "nep89")
+
+
+def normalize_ase_model_name(model_name: str | None) -> str:
+    model = str(model_name or "mattersim").strip().lower()
+    if model not in SUPPORTED_ASE_MODELS:
+        raise ValueError(
+            f"Unsupported ASE model '{model}'. Use one of: {', '.join(SUPPORTED_ASE_MODELS)}"
+        )
+    return model
+
+
+def get_resources_dir() -> Path:
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[2] / "resources",
+        here.parent / "resources",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def resolve_ase_model_path(model_name: str | None = None, model_file: str | Path | None = None) -> Path | None:
+    model = normalize_ase_model_name(model_name)
+    if model_file is not None:
+        path = Path(model_file).expanduser()
+        if not path.exists():
+            raise FileNotFoundError(f"ASE model file not found: {path}")
+        return path.resolve()
+    if model == "mattersim":
+        return None
+    path = get_resources_dir() / DEFAULT_NEP89_RESOURCE_NAME
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Default nep89 resource not found: {path}. Set ase_model_file explicitly."
+        )
+    return path.resolve()
+
+
+def get_ase_model_config(data: dict | None = None) -> dict:
+    cfg = data or {}
+    return {
+        "model_name": normalize_ase_model_name(cfg.get("ase_model", "mattersim")),
+        "model_file": cfg.get("ase_model_file", cfg.get("pot_file")),
+        "nep_backend": str(cfg.get("ase_nep_backend", "gpu") or "gpu").lower(),
+    }
+
+
+def create_ase_calculator(
+    model_name: str | None = None,
+    model_file: str | Path | None = None,
+    device: str = "cuda",
+    nep_backend: str = "gpu",
+    batch_size: int | None = None,
+):
+    model = normalize_ase_model_name(model_name)
+    resolved_path = resolve_ase_model_path(model, model_file)
+    if model == "mattersim":
+        from mattersim.forcefield import MatterSimCalculator
+
+        kwargs = {"device": device}
+        if resolved_path is not None:
+            kwargs["load_path"] = str(resolved_path)
+        return MatterSimCalculator(**kwargs)
+
+    return NepCalculator(
+        model_file=str(resolved_path),
+        backend=nep_backend,
+        batch_size=batch_size,
+    )
 
 
 class NepBackend(str, Enum):
@@ -197,6 +273,75 @@ class NativeNepCalculator:
             map_func=np.mean,
             axis=0,
         )
+
+
+def _virial9_to_ase_stress(virial9: np.ndarray, volume: float) -> np.ndarray:
+    if volume <= 1e-12:
+        return np.zeros(6, dtype=np.float32)
+    virial_tensor = np.asarray(virial9, dtype=np.float32).reshape(3, 3)
+    stress_tensor = -virial_tensor / float(volume)
+    return np.asarray(
+        [
+            stress_tensor[0, 0],
+            stress_tensor[1, 1],
+            stress_tensor[2, 2],
+            stress_tensor[1, 2],
+            stress_tensor[0, 2],
+            stress_tensor[0, 1],
+        ],
+        dtype=np.float32,
+    )
+
+
+class NepCalculator(Calculator):
+    implemented_properties = ["energy", "free_energy", "forces", "stress"]
+
+    def __init__(
+        self,
+        model_file: str | Path = "nep.txt",
+        backend: NepBackend | str | None = None,
+        batch_size: int | None = None,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.native = NativeNepCalculator(
+            model_file=model_file,
+            backend=backend,
+            batch_size=batch_size,
+        )
+        self.model_path = self.native.model_path
+        self.backend = self.native.backend
+
+    def calculate(self, atoms=None, properties=None, system_changes=all_changes):
+        if properties is None:
+            properties = self.implemented_properties
+        super().calculate(atoms, properties, system_changes)
+        if atoms is None:
+            raise ValueError("ASE NEP calculator requires an Atoms object")
+        if not self.native.initialized:
+            raise RuntimeError(f"Failed to initialize native NEP backend from {self.model_path}")
+
+        energies, forces_blocks, virial_blocks = self.native.calculate([atoms], mean_virial=False)
+        if len(energies) != 1 or len(forces_blocks) != 1 or len(virial_blocks) != 1:
+            raise RuntimeError(
+                f"Native NEP returned inconsistent single-structure results: "
+                f"energies={len(energies)}, forces={len(forces_blocks)}, virials={len(virial_blocks)}"
+            )
+
+        energy = float(energies[0])
+        forces = np.asarray(forces_blocks[0], dtype=np.float32)
+        virial_tensor = np.asarray(virial_blocks[0], dtype=np.float32)
+        total_virial = np.sum(virial_tensor, axis=0, dtype=np.float32)
+        stress = _virial9_to_ase_stress(total_virial, atoms.get_volume())
+
+        self.results["energy"] = energy
+        self.results["free_energy"] = energy
+        self.results["forces"] = forces
+        self.results["stress"] = stress
+
+
+NEP = NepCalculator
+AseNativeNepCalculator = NepCalculator
 
 
 def has_native_nep_backend() -> bool:

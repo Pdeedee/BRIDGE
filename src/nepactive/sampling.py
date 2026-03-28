@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 from ase import Atoms
+from ase.io import read, write
 
 from nepactive import dlog
 from nepactive.nep_backend import NativeNepCalculator
@@ -55,6 +57,60 @@ def farthest_point_sampling(
             if len(sampled_indices) >= n_samples:
                 break
     return sampled_indices
+
+
+def incremental_fps_with_r2(
+    points: np.ndarray,
+    n_samples: int,
+    r2_threshold: float,
+    min_dist: float = 0.0,
+    selected_data: Optional[np.ndarray] = None,
+) -> tuple[list[int], float]:
+    if points.size == 0 or n_samples <= 0:
+        return [], 0.0
+
+    n_points = int(points.shape[0])
+    n_samples = min(int(n_samples), n_points)
+    sampled_indices: list[int] = []
+
+    overall_mean = np.mean(points, axis=0)
+    total_variance = float(np.sum((points - overall_mean) ** 2))
+
+    if isinstance(selected_data, np.ndarray) and selected_data.size != 0:
+        distances_to_samples = numpy_cdist(points, selected_data)
+        min_distances = np.min(distances_to_samples, axis=1)
+    else:
+        first_index = 0
+        sampled_indices.append(first_index)
+        min_distances = np.linalg.norm(points - points[first_index], axis=1)
+
+    def current_r2() -> float:
+        if total_variance <= 0.0:
+            return 1.0
+        if not sampled_indices:
+            return 0.0
+        explained_variance = float(np.sum((points[sampled_indices] - overall_mean) ** 2))
+        return explained_variance / total_variance
+
+    r2 = current_r2()
+    if r2 >= float(r2_threshold) or len(sampled_indices) >= n_samples:
+        return sampled_indices, r2
+
+    while len(sampled_indices) < n_samples:
+        current_index = int(np.argmax(min_distances))
+        if float(min_distances[current_index]) < float(min_dist):
+            break
+        if current_index in sampled_indices:
+            break
+        sampled_indices.append(current_index)
+        new_point = points[current_index]
+        new_distances = np.linalg.norm(points - new_point, axis=1)
+        min_distances = np.minimum(min_distances, new_distances)
+        r2 = current_r2()
+        if r2 >= float(r2_threshold):
+            break
+
+    return sampled_indices, r2
 
 
 def _guess_cutoff(atoms: Atoms) -> float:
@@ -143,7 +199,7 @@ def soap_fingerprint(
     return np.asarray(descriptors, dtype=np.float32)
 
 
-def _resolve_descriptor_model(descriptor_model: str | None) -> str | None:
+def _resolve_descriptor_model(descriptor_model: Optional[str]) -> Optional[str]:
     if not descriptor_model:
         return None
     path = Path(descriptor_model).expanduser()
@@ -154,7 +210,7 @@ def _resolve_descriptor_model(descriptor_model: str | None) -> str | None:
 
 def compute_structure_descriptors(
     atoms_list: list[Atoms],
-    descriptor_model: str | None = None,
+    descriptor_model: Optional[str] = None,
     descriptor_mode: str = "auto",
     nep_backend: str = "auto",
 ) -> tuple[np.ndarray, str]:
@@ -190,29 +246,38 @@ def compute_structure_descriptors(
     return np.asarray(fingerprints, dtype=np.float32), "structural"
 
 
-def select_structure_indices(
+def select_structure_indices_with_info(
     atoms_list: list[Atoms],
     n_samples: int,
     method: str = "fps",
-    descriptor_model: str | None = None,
+    descriptor_model: Optional[str] = None,
     descriptor_mode: str = "auto",
     min_dist: float = 0.0,
     nep_backend: str = "auto",
     reference_atoms_list: Optional[list[Atoms]] = None,
-) -> list[int]:
+    r2_threshold: Optional[float] = None,
+) -> tuple[list[int], dict]:
     total = len(atoms_list)
+    info = {
+        "source": "empty",
+        "reference_count": 0,
+        "r2": None,
+        "r2_threshold": r2_threshold,
+    }
     if n_samples <= 0 or total == 0:
-        return []
+        return [], info
     if n_samples >= total:
-        return list(range(total))
+        return list(range(total)), info
 
     method = str(method or "fps").lower()
     if method == "random":
-        return list(range(n_samples))
+        info["source"] = "random"
+        return list(range(n_samples)), info
     if method != "fps":
         raise ValueError(f"Unsupported structure sampling method: {method}")
 
     reference_atoms = [atoms for atoms in (reference_atoms_list or []) if atoms is not None]
+    info["reference_count"] = len(reference_atoms)
     if reference_atoms:
         combined_atoms = reference_atoms + list(atoms_list)
         combined_descriptors, source = compute_structure_descriptors(
@@ -232,28 +297,73 @@ def select_structure_indices(
             nep_backend=nep_backend,
         )
         reference_descriptors = None
+    info["source"] = source
 
-    indices = farthest_point_sampling(
-        descriptors,
+    if r2_threshold is not None:
+        indices, r2 = incremental_fps_with_r2(
+            descriptors,
+            n_samples=n_samples,
+            r2_threshold=float(r2_threshold),
+            min_dist=min_dist,
+            selected_data=reference_descriptors,
+        )
+        info["r2"] = float(r2)
+        dlog.info(
+            "Selected %d/%d structures with %s FPS against %d reference structures (R2=%.6f, threshold=%s)",
+            len(indices),
+            total,
+            source,
+            len(reference_atoms),
+            float(r2),
+            r2_threshold,
+        )
+    else:
+        indices = farthest_point_sampling(
+            descriptors,
+            n_samples=n_samples,
+            min_dist=min_dist,
+            selected_data=reference_descriptors,
+        )
+        dlog.info(
+            "Selected %d/%d structures with %s FPS against %d reference structures",
+            len(indices),
+            total,
+            source,
+            len(reference_atoms),
+        )
+    return sorted(indices), info
+
+
+def select_structure_indices(
+    atoms_list: list[Atoms],
+    n_samples: int,
+    method: str = "fps",
+    descriptor_model: Optional[str] = None,
+    descriptor_mode: str = "auto",
+    min_dist: float = 0.0,
+    nep_backend: str = "auto",
+    reference_atoms_list: Optional[list[Atoms]] = None,
+    r2_threshold: Optional[float] = None,
+) -> list[int]:
+    indices, _ = select_structure_indices_with_info(
+        atoms_list,
         n_samples=n_samples,
+        method=method,
+        descriptor_model=descriptor_model,
+        descriptor_mode=descriptor_mode,
         min_dist=min_dist,
-        selected_data=reference_descriptors,
+        nep_backend=nep_backend,
+        reference_atoms_list=reference_atoms_list,
+        r2_threshold=r2_threshold,
     )
-    dlog.info(
-        "Selected %d/%d structures with %s FPS against %d reference structures",
-        len(indices),
-        total,
-        source,
-        len(reference_atoms),
-    )
-    return sorted(indices)
+    return indices
 
 
 def split_train_test_structures(
     atoms_list: list[Atoms],
     training_ratio: float = 0.8,
     method: str = "fps",
-    descriptor_model: str | None = None,
+    descriptor_model: Optional[str] = None,
     descriptor_mode: str = "auto",
     min_dist: float = 0.0,
     nep_backend: str = "auto",
@@ -285,3 +395,116 @@ def split_train_test_structures(
     train = [atoms for index, atoms in enumerate(atoms_list) if index not in test_indices]
     test = [atoms for index, atoms in enumerate(atoms_list) if index in test_indices]
     return train, test
+
+def _load_atoms_from_file(structure_file: str, index: str = ":") -> list[Atoms]:
+    atoms_obj = read(structure_file, index=index)
+    if isinstance(atoms_obj, Atoms):
+        return [atoms_obj]
+    return list(atoms_obj)
+
+
+def run_fps_cli(
+    structure_file: str,
+    output: str = "fps_selected.xyz",
+    index: str = ":",
+    number: Optional[int] = None,
+    r2_threshold: Optional[float] = None,
+    descriptor: str = "structural",
+    descriptor_model: Optional[str] = None,
+    backend: str = "auto",
+    min_dist: float = 0.0,
+    reference: Optional[str] = None,
+    reference_index: str = ":",
+) -> dict:
+    atoms_list = _load_atoms_from_file(structure_file, index=index)
+    if not atoms_list:
+        raise ValueError(f"No structures found in {structure_file} with index={index}")
+
+    reference_atoms_list = None
+    if reference is not None:
+        reference_atoms_list = _load_atoms_from_file(reference, index=reference_index)
+
+    total = len(atoms_list)
+    if number is None:
+        n_samples = total
+    else:
+        if int(number) <= 0:
+            raise ValueError("--number must be a positive integer")
+        n_samples = min(int(number), total)
+
+    selected_indices, info = select_structure_indices_with_info(
+        atoms_list,
+        n_samples=n_samples,
+        method="fps",
+        descriptor_model=descriptor_model,
+        descriptor_mode=descriptor,
+        min_dist=min_dist,
+        nep_backend=backend,
+        reference_atoms_list=reference_atoms_list,
+        r2_threshold=r2_threshold,
+    )
+    selected_atoms = [atoms_list[i] for i in selected_indices]
+    write(output, selected_atoms)
+
+    result = {
+        "input": structure_file,
+        "output": output,
+        "index": index,
+        "selected": len(selected_atoms),
+        "total": total,
+        "indices": selected_indices,
+        "descriptor": info.get("source"),
+        "reference_count": info.get("reference_count"),
+        "r2": info.get("r2"),
+        "r2_threshold": info.get("r2_threshold"),
+    }
+    return result
+
+
+def cli() -> None:
+    parser = argparse.ArgumentParser(
+        description="Use FPS to select representative structures from a trajectory or multi-structure file."
+    )
+    parser.add_argument("structurefile", help="Input structure or trajectory file")
+    parser.add_argument("-o", "--output", default="fps_selected.xyz", help="Output file for selected structures")
+    parser.add_argument("--index", default=":", help="ASE frame index, e.g. ':' or '0:100:5'")
+    parser.add_argument("-n", "--number", type=int, default=None, help="Maximum number of structures to keep")
+    parser.add_argument("--r2", "--R2", dest="r2_threshold", type=float, default=None, help="Optional R2 coverage threshold for early stopping")
+    parser.add_argument("--descriptor", default="structural", choices=["auto", "structural", "nep", "soap"], help="Descriptor used for FPS")
+    parser.add_argument("--model", dest="descriptor_model", default=None, help="Descriptor model file when --descriptor nep")
+    parser.add_argument("--backend", default="auto", choices=["auto", "gpu", "cpu", "native"], help="Backend used for NEP descriptors")
+    parser.add_argument("--min-dist", type=float, default=0.0, help="Stop FPS when min distance falls below this threshold")
+    parser.add_argument("--reference", default=None, help="Optional reference trajectory/file used as an already-covered dataset")
+    parser.add_argument("--reference-index", default=":", help="ASE index for the reference file")
+    args = parser.parse_args()
+
+    if args.number is None and args.r2_threshold is None:
+        parser.error("One of --number or --r2/--R2 must be provided")
+
+    result = run_fps_cli(
+        structure_file=args.structurefile,
+        output=args.output,
+        index=args.index,
+        number=args.number,
+        r2_threshold=args.r2_threshold,
+        descriptor=args.descriptor,
+        descriptor_model=args.descriptor_model,
+        backend="auto" if args.backend == "native" else args.backend,
+        min_dist=args.min_dist,
+        reference=args.reference,
+        reference_index=args.reference_index,
+    )
+
+    print(f"Input: {result['input']}")
+    print(f"Output: {result['output']}")
+    print(f"Selected: {result['selected']}/{result['total']}")
+    print(f"Descriptor: {result['descriptor']}")
+    print(f"Reference count: {result['reference_count']}")
+    print(f"R2: {result['r2']}")
+    print(f"R2 threshold: {result['r2_threshold']}")
+    print(f"Indices: {result['indices']}")
+
+
+if __name__ == "__main__":
+    cli()
+

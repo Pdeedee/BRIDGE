@@ -12,7 +12,6 @@ import re
 from nepactive import dlog
 from ase.io import read, write
 from ase.io.trajectory import Trajectory
-from mattersim.forcefield import MatterSimCalculator
 from nepactive.logger import MDLogger
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.md.nvtberendsen import NVTBerendsen
@@ -24,6 +23,7 @@ from nepactive.tools import shock_calculate, run_gpumd_task, run_py_tasks, compu
 from ase.io.extxyz import write_extxyz
 from nepactive.tools import get_shortest_distance
 from nepactive.extract import analyze_trajectory
+from nepactive.nep_backend import create_ase_calculator, get_ase_model_config
 
 
 # ---------------------------------------------------------------------------
@@ -35,14 +35,24 @@ class BaseRun:
         self.sdata = sdata
         self.struc_file_name = os.path.abspath(sdata.get("structure", "POSCAR"))
         self.atoms = read(self.struc_file_name)
-        calculator = MatterSimCalculator(device="cuda")
-        self.atoms._calc = calculator
+        self.atoms._calc = create_ase_calculator(**self._ase_model_config())
         self.work_dir = os.getcwd()
         self.analyze_range = sdata.get("analyze_range", [0.5, 1])
         self.r_rho = sdata.get("rho", None)
         cell = self.atoms.get_cell()
         cell_complete = self.atoms.get_cell(complete=True)
         dlog.info(f"cell: {cell}, cell_complete: {cell_complete}")
+
+    def _ase_model_config(self) -> dict:
+        return get_ase_model_config(self.idata)
+
+    def _ase_template_kwargs(self) -> dict:
+        cfg = self._ase_model_config()
+        return {
+            "ase_model_name": repr(cfg["model_name"]),
+            "ase_model_file": repr(cfg["model_file"]),
+            "ase_nep_backend": repr(cfg["nep_backend"]),
+        }
 
     def calculate_properties(self):
         dlog.info("start calculating properties")
@@ -64,7 +74,7 @@ class BaseRun:
             os.makedirs("structure", exist_ok=True)
             os.chdir("structure")
             if not os.path.exists("task_finished"):
-                nvt_pyfile = nvt_pytemplate.format(structure=self.struc_file_name, temperature=300, steps=2000)
+                nvt_pyfile = nvt_pytemplate.format(structure=self.struc_file_name, temperature=300, steps=2000, **self._ase_template_kwargs())
                 python_interpreter = self.idata.get("python_interpreter")
                 with open("ensemble.py", "w") as f:
                     f.write(nvt_pyfile)
@@ -118,7 +128,7 @@ class BaseRun:
                 p0=p0, v0=self.r_v, dump_freq=dump_freq,
                 pressure=self.pressure_list[ii], steps=steps,
                 time_step=time_step, tau_t=tau_t, tau_p=tau_p,
-                pmode=pmode
+                pmode=pmode, **self._ase_template_kwargs()
             )
             with open("ensemble.py", "w", encoding='utf-8') as f:
                 f.write(py_file)

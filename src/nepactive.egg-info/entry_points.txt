@@ -1,4 +1,0 @@
-[console_scripts]
-nep-identify = nepactive.extract:cli
-nep-product = nepactive.make_product:main
-nepactive = nepactive.main:main

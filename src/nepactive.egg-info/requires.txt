@@ -1,3 +1,0 @@
-ase==3.23.0
-mattersim
-numpy==1.26.4

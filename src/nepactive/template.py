@@ -154,8 +154,8 @@ from ase.constraints import UnitCellFilter
 from nepactive.nphugo import NPHugo, MTTK
 from ase.io import  read,write
 from ase.md.nvtberendsen import NVTBerendsen
-from mattersim.forcefield import MatterSimCalculator
-calculator=MatterSimCalculator(device="cuda")
+from nepactive.nep_backend import create_ase_calculator
+calculator = create_ase_calculator(model_name={ase_model_name}, model_file={ase_model_file}, device="cuda", nep_backend={ase_nep_backend})
 atoms = read("{structure}")
 # 使用元素符号排序原子
 elements = atoms.get_chemical_symbols()
@@ -194,8 +194,8 @@ from ase.constraints import UnitCellFilter
 from nepactive.nphugo import NPHugo, MTTK
 from ase.io import  read,write
 from ase.md.nvtberendsen import NVTBerendsen
-from mattersim.forcefield import MatterSimCalculator
-calculator=MatterSimCalculator(device="cuda")
+from nepactive.nep_backend import create_ase_calculator
+calculator = create_ase_calculator(model_name={ase_model_name}, model_file={ase_model_file}, device="cuda", nep_backend={ase_nep_backend})
 atoms = read("{structure}")
 # 使用元素符号排序原子
 elements = atoms.get_chemical_symbols()
@@ -234,8 +234,8 @@ from ase.constraints import UnitCellFilter
 from nepactive.nphugo import NPHugo, MTTK
 from ase.io import  read,write
 from ase.md.nvtberendsen import NVTBerendsen
-from mattersim.forcefield import MatterSimCalculator
-calculator=MatterSimCalculator(device="cuda")
+from nepactive.nep_backend import create_ase_calculator
+calculator = create_ase_calculator(model_name={ase_model_name}, model_file={ase_model_file}, device="cuda", nep_backend={ase_nep_backend})
 atoms = read("{structure}")
 # 使用元素符号排序原子
 elements = atoms.get_chemical_symbols()
@@ -266,8 +266,8 @@ from ase.optimize import LBFGS
 from ase.constraints import UnitCellFilter
 from nepactive.nphugo import NPHugo, MTTK
 from ase.io import  read,write
-from mattersim.forcefield import MatterSimCalculator
-calculator=MatterSimCalculator(device="cuda")
+from nepactive.nep_backend import create_ase_calculator
+calculator = create_ase_calculator(model_name={ase_model_name}, model_file={ase_model_file}, device="cuda", nep_backend={ase_nep_backend})
 atoms = read("{structure}")
 # 使用元素符号排序原子
 elements = atoms.get_chemical_symbols()
@@ -307,8 +307,8 @@ from ase.optimize import LBFGS
 from ase.constraints import UnitCellFilter
 from nepactive.nphugo import NPHugo, MTTK
 from ase.io import  read,write
-from mattersim.forcefield import MatterSimCalculator
-calculator=MatterSimCalculator(device="cuda")
+from nepactive.nep_backend import create_ase_calculator
+calculator = create_ase_calculator(model_name={ase_model_name}, model_file={ase_model_file}, device="cuda", nep_backend={ase_nep_backend})
 atoms = read("{structure}")
 # 使用元素符号排序原子
 elements = atoms.get_chemical_symbols()
@@ -355,8 +355,8 @@ from ase.io.trajectory import Trajectory
 import numpy as np
 from ase.optimize import LBFGS
 from nepactive.npt_scr import NPT_SCR_Hugo
-from mattersim.forcefield import MatterSimCalculator
-calculator = MatterSimCalculator(device="cuda")
+from nepactive.nep_backend import create_ase_calculator
+calculator = create_ase_calculator(model_name={ase_model_name}, model_file={ase_model_file}, device="cuda", nep_backend={ase_nep_backend})
 atoms = read("{structure}")
 elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
@@ -395,8 +395,8 @@ from ase.io.trajectory import Trajectory
 import numpy as np
 from ase.optimize import LBFGS
 from nepactive.npt_scr import NPT_SCR
-from mattersim.forcefield import MatterSimCalculator
-calculator = MatterSimCalculator(device="cuda")
+from nepactive.nep_backend import create_ase_calculator
+calculator = create_ase_calculator(model_name={ase_model_name}, model_file={ase_model_file}, device="cuda", nep_backend={ase_nep_backend})
 atoms = read("{structure}")
 elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
@@ -433,8 +433,8 @@ from ase.io.trajectory import Trajectory
 import numpy as np
 from ase.optimize import LBFGS
 from nepactive.npt_scr import NPT_SCR
-from mattersim.forcefield import MatterSimCalculator
-calculator = MatterSimCalculator(device="cuda")
+from nepactive.nep_backend import create_ase_calculator
+calculator = create_ase_calculator(model_name={ase_model_name}, model_file={ase_model_file}, device="cuda", nep_backend={ase_nep_backend})
 atoms = read("{structure}")
 elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]

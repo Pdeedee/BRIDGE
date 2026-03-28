@@ -1,39 +1,149 @@
+project_name: "HMX"                                                   # 项目名称，远程提交任务时会命名为该名字
+yaml_synchro: true                                                    # 执行每个record.nep步骤时是否重新同步文件参数
+
 replicate_cell: "1 1 1"
-nep_in_header: "4 C N O H" # nep文件头部信息
+accuracy: 1                                                           # 爆速测试精度，据此判断是否收敛，若收敛，程序将停止
+ini_engine: "ase"                                                     # 初始动力学数据集获得方法，目前只支持ase
+# ini_ase_ensemble_files: ["prep/npt.py"]
+python_interpreter: "python" # 执行动力学的时候使用的python解释器     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 ini_frames: 1500                                                      # 初始数据集所需要的结构数
 ini_train_steps: 10000                                                # 第一代训练步数
 training_ratio: 0.8                                                   # 训练集比例
 pot_number: 4                                                         # 势函数个数
 pot_inherit: true                                                     # 下一代的训练势函数是否继承上一代的训练结果，否的话会重新训练
 train_steps: 5000                                                     # 每一代势函数的训练步数
-# pot_file: "/home/liuzf/.local/mattersim/pretrained_models/mattersim-v1.0.0-1M.pth" # 用来为数据集打标签的mattersim模型        !!!!!!!!!!!!!!!!!!!!!!!!!!!!
-max_temp: 10000                                                        # 主动学习过程中允许的最大温度 
+nep_in_header: "type 4 H C N O"                                    # 可选覆盖；默认会从多个 structure_files 自动识别元素
+ase_model: "mattersim"                                                  # 主动学习初始数据与 label 的 ASE 模型: "mattersim" / "nep89"
+ase_model_file: null                                                     # 可选覆盖模型路径；ase_model=nep89 时默认读取顶层 resources/nep89_20250409.txt
+ase_nep_backend: "gpu"                                                 # 当 ase_model=nep89 时使用的本地后端: "gpu" / "cpu" / "auto"
+pot_file: null                                                           # 兼容旧参数；若设置则等价于 ase_model_file
+OB_give: 10
+
+gpu_available: [0,1,2,3]       # 可用的 GPU 编号
+task_per_gpu: 1                # 每个 GPU 上运行的任务数
+
+max_temp: 10000                                                        # 主动学习过程中允许的最大温度
+shortest_d: 0.5                                                         # 允许的最短原子距离阈值(A)；低于该值的帧会被判为异常
+analyze_range: [0.5, 1.0]                                               # 主流程统计热力学平均值的轨迹分析区间
+max_run_steps: 1200000                                                  # 单轮主动学习允许的最大 MD 步数上限
+max_iter: 40                                                            # 主动学习最大迭代轮数
+run_steps_factor: 2                                                     # 早期失败后缩短下一轮步数时使用的缩放因子
+continue_from_old: false                                                # 是否继续复用旧目录中的部分采样结果
+gpumd_plt: true                                                         # 是否在采样后调用绘图后处理
+label_engine: "mattersim"                                              # 候选结构标注路径: "mattersim"(实际使用 ase_model=mattersim/nep89) / "vasp"
+shock_run: true                                                         # 主流程中是否执行 init 与 shock 相关流程
+job_system: null                                                        # HOD 等流程可选的任务系统标识，不用可保持 null
+rho: null                                                               # 可选单一目标密度(g/cm^3)；主流程 init/shock 会读取这个值
+rhos: [1.0, 1.2, 1.4, 1.6, 1.8, 2.0]                                   # `nepactive shock` 的多密度扫描列表；优先于 shock.rhos
+
+# 一定要检查POTCAR的顺序正不正确
 # structure_prefix: "/workplace/liuzf/code/nepactive/example/00.HMX/prep" # 结构文件所在的地址前缀，默认为当前目录
 structure_files: ["POSCAR", "init/struc.000/structure/POSCAR","prep/final.xyz"] # 用来跑动力学的初始结构的地址?
-#model_devi
-uncertainty_threshold: [0.3,1] # 主动学习过程中选取为候选的结构的uncertainty阈值
-uncertainty_level: 1           # 主动学习过程中选取为候选的uncertainty level计算相对误差所用到的参数
-uncertainty_mode: "max"        # 主动学习过程中选取为候选的uncertainty mode， 有"max","mean"两种模式
-energy_threshold: 1            # 主动学习过程中选取为候选的能量阈值下限，单位为eV
-needed_frames: 10000           # 主动学习过程中，每代所需要的保存结构数
+kpoints_file: "prep/KPOINTS" # 远程提交任务的KPOINTS文件
+incar_file: "prep/INCAR"     # 远程提交任务的INCAR文件
+potcar_file: "prep/POTCAR"   # 远程提交任务的POTCAR文件
 
-ini_run_steps: 100000          # 第0代动力学的运行步数
-max_candidate: 1000            # 主动学习过程中每代所需要的候选结构数  
-model_devi_time_step: 0.2      # 主动学习过程中每代的时间步长
-gpu_available: [0,1,2,3]       # 可用的GPU编号
-task_per_gpu: 1                # 每个GPU上运行的任务数
-time_step: 0.2                 # 动力学的时间步长
-max_run_steps: 1000000         # 当步数大于此设置的最大运行步数时且，代数大于等于20代时，程序自动停止
-model_devi_general:
-  -
+#sampling
+sampling:
+  method: "relative"                  # 候选筛选方式: "relative" 或 "fps"
+  uncertainty_threshold: [0.3,1]      # 主动学习过程中选取为候选的结构的 uncertainty 阈值
+  uncertainty_level: 1                 # 主动学习过程中计算相对误差所用到的参数
+  uncertainty_mode: "max"             # 主动学习过程中 uncertainty mode: "max" / "mean"
+  energy_threshold: 1                  # 主动学习过程中候选结构的能量阈值下限，单位 eV
+  needed_frames: 10000                 # 主动学习过程中每代所需要的保存结构数
+  max_candidate: 1000                  # 主动学习过程中每代所需要的候选结构数
+  max_reference_points: 10000          # 全局 FPS 时用于比较的 reference 代表集上限，程序会落盘增量 cache 以便中断续接
+  final_r2_threshold: null             # 最后一步全局 FPS 的可选 R2 提前停止阈值，例如 0.95
+  time_step: 0.2                       # 主动学习过程中每代的时间步长
+  deviation_backend: auto              # auto / native / gpu / cpu
+  enable_molecule_analysis: false      # 是否做分子识别统计，默认关闭以避免额外开销
+  molecule_analysis_backend: "ase"    # 分子识别后端，当前仅支持 ase
+
+  init_method: fps                     # 初始 init 数据切分方式
+  init_descriptor: soap                # soap / structural / nep
+  init_min_dist: 0.0
+
+  dataset_method: fps                  # candidate/train/test 切分方式
+  dataset_descriptor: structural       # structural / nep
+  dataset_min_dist: 0.0
+  dataset_backend: auto                # auto / native / gpu / cpu
+  # dataset_nep_file: /path/to/nep.txt # 当 dataset_descriptor: nep 时需要
+
+  general:
     # id: "11-24"
-    ensembles: ["nphugo","nvt"]      # 主动学习用来采样的动力学系综，爆速模拟推荐选取"nphugo"
-    structure_id: [[0,1],[0,1]]      # 动力学选取的结构文件的编号
-    pressure: [60,35,10]       # 模拟的压力列表，单位为GPa
-    pperiod: 2000              # 模拟的压浴参数设置
-    temperatures: [3000]       # 模拟的温度列表，单位为K
+    ensembles: ["nphugo_scr","nvt"]      # 主动学习采样系综，可选: "nphugo_mttk", "nphugo_scr", "nvt", "npt", "msst"
+    structure_id: [[0,1],[0,1]]             # 动力学选取的结构文件编号
+    pressure: [60,35,10]                    # 模拟的压力列表，单位 GPa
+    pperiod: 2000                           # 模拟的压浴参数设置，单位步数 (仅 nphugo/GPUMD 使用)
+    temperature: [3000]                     # 模拟的温度列表，单位 K
 
-stable:                        # 用来跑爆速测试与初始数据集部分的设置
-  pressures: [20,40,60,80]     # 初始数据集的所采取的压力列表
-  temperatures: [3000]         # 初始数据集的温度列表
+init:                          # 初始产物结构生成设置
+  #structure: "POSCAR"          # 结构文件名
+  struc_num: 1                 # 初始结构数量
+  pressure: [20,40,60,80]      # 初始数据集的压力列表，单位为GPa
+  temperature: [3000]          # 初始数据集的温度列表，单位为K
   steps: 40000                 # 初始数据集的运行步数
+  time_step: 0.2               # 时间步长，单位为fs
+  dump_freq: 10                # dump频率，单位为步数
+  # tau_t: 100                 # BDP 恒温器弛豫时间 (默认 100)
+  # tau_p: 2000                # SCR 气压计弛豫时间 (默认 2000)
+  # pmode: "iso"               # 压力模式 (默认 "iso")
+
+shock:                         # Hugoniostat 爆速测试设置
+  structure: "POSCAR"          # 结构文件名
+  rho: null                    # 可选；单次 shock 任务目标密度(g/cm^3)，主流程里通常由根级 rho 覆盖
+  rhos: [1.0, 1.2, 1.4, 1.6, 1.8, 2.0] # `nepactive shock` 的备选多密度列表；当根级 rhos 未设置时使用
+  pressure_list: [20,25,30,35,40,45,50,55] # 爆速测试的压力列表，单位为GPa
+  steps: 100000                # 爆速测试的运行步数
+  time_step: 0.4               # 时间步长，单位为fs
+  dump_freq: 10                # dump频率，单位为步数
+  analyze_range: [0.8,1]       # 爆速测试的分析范围
+  pot: "mattersim"                   # 势函数: "nep"(GPUMD, 默认) / "mattersim"
+  # tau_t: 100                 # BDP 恒温器弛豫时间 (默认 100)
+  # tau_p: 2000                # SCR 气压计弛豫时间 (默认 2000)
+  # pmode: "iso"               # 压力模式 (默认 "iso")
+
+# VASP INCAR 参数覆盖（基于 MPStaticSet，默认关闭自旋 ISPIN=1）
+# 不配置则使用 MPStaticSet 默认值 + ISPIN=1
+incar_settings:
+  ALGO: Fast
+  EDIFF: 1.0e-06
+  ENCUT: 700
+  ISMEAR: 0
+  ISPIN: 1               # 关闭自旋
+  IVDW: 11               # DFT-D3 色散校正
+  KSPACING: 0.7           # K点间距，设置后不生成 KPOINTS 文件
+  LASPH: false
+  LREAL: false
+  LWAVE: false
+  LCHARG: false
+  NELM: 100
+  NSW: 0
+  PREC: Accurate
+  SIGMA: 0.05
+  NPAR: 4
+
+#remote
+remote:
+  dirs: ["."]                                                          # remote 扫描的本地目录列表，默认当前目录
+  fp_command: "mpirun -np 96 vasp_std"
+  ssh_username: "sch9797@BSCC-T6"
+  ssh_hostname: "ssh.cn-zhongwei-1.paracloud.com"
+  ssh_port: 22
+  ssh_timeout: 20
+  remote_root: "/public1/home/sch9797/liu/nep"
+  group_numbers: 10
+  slurm_header_script:
+    - "#!/bin/bash"
+    - "#SBATCH --job-name=gpumd"
+    - "#SBATCH -p v6_384"
+    - "#SBATCH -N 1"
+    - "#SBATCH -n 96"
+    - "source /public1/soft/modules/module.sh"
+    - "module load mpi/oneAPI/2022.1"
+    - "export PATH=/public1/home/sch9797/software-sch9797/6.3.0-vtst+opt+sol+wannier:$PATH"
+
+
+shock_test_interval: 1                                                   # 每隔多少轮主动学习触发一次爆速测试
+shock_test_begin_step: 400000                                            # 至少训练到多少步之后才开始做爆速测试
+if_stable_run: true                                                      # 主流程中是否先执行初始稳定化/性质计算

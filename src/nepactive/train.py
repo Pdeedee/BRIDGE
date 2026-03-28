@@ -2,7 +2,6 @@
 import copy
 import itertools
 import os
-import random
 import re
 import shutil
 import subprocess
@@ -19,7 +18,6 @@ import yaml
 from ase import Atoms, units
 from ase.io import read, write, Trajectory
 from ase.optimize import BFGS
-from mattersim.forcefield import MatterSimCalculator
 from torch.cuda import empty_cache
 from tqdm import tqdm
 
@@ -30,7 +28,8 @@ from nepactive.force import force_main
 from nepactive.packmol import make_structure
 from nepactive.plt import ase_plt, gpumdplt, nep_plt
 from nepactive.remote import Remotetask
-from nepactive.sampling import select_structure_indices, split_train_test_structures
+from nepactive.nep_backend import create_ase_calculator, get_ase_model_config
+from nepactive.sampling import select_structure_indices, select_structure_indices_with_info, split_train_test_structures
 from nepactive.stable import InitRun, ShockRun
 from nepactive.template import (
     continue_pytemplate,
@@ -256,33 +255,208 @@ class Nepactive(object):
         )
         return list(atoms_list[:first_bad]), shortest_distances
 
-    def _load_sampling_reference_structures(self) -> list[Atoms]:
-        reference_atoms: list[Atoms] = []
+    def _sampling_reference_cache_paths(self) -> tuple[str, str]:
+        return (
+            os.path.join(self.work_dir, ".sampling_reference_cache.xyz"),
+            os.path.join(self.work_dir, ".sampling_reference_cache.yaml"),
+        )
+
+    def _sampling_reference_signature(self) -> dict:
         sampling_cfg = self._sampling_config(self.idata)
-        max_reference_points = int(sampling_cfg.get("max_reference_points", 10000) or 0)
-        reference_files = [
-            os.path.join(self.work_dir, "init", "iter_train.xyz"),
-            os.path.join(self.work_dir, "init", "iter_test.xyz"),
-        ]
-        for iii in range(max(self.ii, 0)):
+        descriptor_kwargs = self._sampling_descriptor_kwargs()
+        descriptor_kwargs["method"] = "fps"
+        return {
+            "max_reference_points": int(sampling_cfg.get("max_reference_points", 10000) or 0),
+            "shortest_d": float(self.idata.get("shortest_d", 0.0) or 0.0),
+            "descriptor_kwargs": descriptor_kwargs,
+        }
+
+    @staticmethod
+    def _load_sampling_cache_metadata(meta_path: str) -> Optional[dict]:
+        if not os.path.exists(meta_path):
+            return None
+        with open(meta_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        if not isinstance(data, dict):
+            return None
+        return data
+
+    def _write_sampling_reference_cache(
+        self,
+        atoms_list: list[Atoms],
+        meta_path: str,
+        xyz_path: str,
+        signature: dict,
+        last_reference_iter: int,
+    ) -> None:
+        with open(xyz_path, "w", encoding="utf-8") as f:
+            if atoms_list:
+                write_extxyz(f, atoms_list)
+        metadata = {
+            "version": 1,
+            "last_reference_iter": int(last_reference_iter),
+            "reference_count": len(atoms_list),
+            "signature": signature,
+        }
+        with open(meta_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(metadata, f, sort_keys=True)
+
+    def _sampling_reference_files(
+        self,
+        start_iter: Optional[int] = None,
+        end_iter: Optional[int] = None,
+        include_init: bool = True,
+    ) -> list[str]:
+        reference_files: list[str] = []
+        if include_init:
+            reference_files.extend(
+                [
+                    os.path.join(self.work_dir, "init", "iter_train.xyz"),
+                    os.path.join(self.work_dir, "init", "iter_test.xyz"),
+                ]
+            )
+        if start_iter is None or end_iter is None:
+            return reference_files
+        for iii in range(max(start_iter, 0), end_iter + 1):
             reference_files.extend(
                 [
                     os.path.join(self.work_dir, f"iter.{iii:06d}", "02.label", "iter_train.xyz"),
                     os.path.join(self.work_dir, f"iter.{iii:06d}", "02.label", "iter_test.xyz"),
                 ]
             )
+        return reference_files
 
-        for file_path in reference_files:
+    def _load_reference_atoms_from_files(self, file_paths: list[str]) -> list[Atoms]:
+        reference_atoms: list[Atoms] = []
+        for file_path in file_paths:
             reference_atoms.extend(self._load_xyz_structures(file_path))
-        original_count = len(reference_atoms)
-        if max_reference_points > 0 and original_count > max_reference_points:
-            selected_indices = sorted(random.sample(range(original_count), max_reference_points))
-            reference_atoms = [reference_atoms[index] for index in selected_indices]
+        return reference_atoms
+
+    def _compress_reference_atoms(
+        self,
+        reference_atoms: list[Atoms],
+        max_reference_points: int,
+        signature: dict,
+        context: str,
+    ) -> list[Atoms]:
+        if max_reference_points <= 0 or len(reference_atoms) <= max_reference_points:
+            return reference_atoms
+
+        sampling_kwargs = dict(signature["descriptor_kwargs"])
+        selected_indices, sampling_info = select_structure_indices_with_info(
+            reference_atoms,
+            n_samples=max_reference_points,
+            **sampling_kwargs,
+        )
+        compressed_atoms = [reference_atoms[index] for index in selected_indices]
+        dlog.info(
+            "%s compressed %d -> %d structures with %s FPS representative set",
+            context,
+            len(reference_atoms),
+            len(compressed_atoms),
+            sampling_info.get("source"),
+        )
+        return compressed_atoms
+
+    def _load_sampling_reference_structures(self) -> list[Atoms]:
+        signature = self._sampling_reference_signature()
+        max_reference_points = int(signature["max_reference_points"])
+        target_last_iter = self.ii - 1
+        xyz_path, meta_path = self._sampling_reference_cache_paths()
+
+        if max_reference_points <= 0:
+            reference_atoms = self._load_reference_atoms_from_files(
+                self._sampling_reference_files(start_iter=0, end_iter=target_last_iter)
+            )
+            reference_atoms, _ = self._filter_atoms_by_shortest_distance(
+                reference_atoms,
+                signature["shortest_d"],
+                "Sampling reference pool",
+            )
+            dlog.info("Loaded %d reference structures for dataset-aware FPS", len(reference_atoms))
+            return reference_atoms
+
+        meta = self._load_sampling_cache_metadata(meta_path)
+        cache_valid = (
+            meta is not None
+            and meta.get("version") == 1
+            and meta.get("signature") == signature
+            and os.path.exists(xyz_path)
+        )
+
+        rebuild_required = (
+            not cache_valid
+            or int(meta.get("last_reference_iter", -10**9)) > target_last_iter
+        )
+
+        if rebuild_required:
+            reference_atoms = self._load_reference_atoms_from_files(
+                self._sampling_reference_files(start_iter=0, end_iter=target_last_iter)
+            )
+            reference_atoms, _ = self._filter_atoms_by_shortest_distance(
+                reference_atoms,
+                signature["shortest_d"],
+                "Sampling reference pool",
+            )
+            original_count = len(reference_atoms)
+            reference_atoms = self._compress_reference_atoms(
+                reference_atoms,
+                max_reference_points,
+                signature,
+                "Sampling reference pool rebuild",
+            )
+            self._write_sampling_reference_cache(
+                reference_atoms,
+                meta_path,
+                xyz_path,
+                signature,
+                target_last_iter,
+            )
             dlog.info(
-                "Downsampled reference structures from %d to %d before dataset-aware FPS",
+                "Rebuilt sampling reference cache for iterations <= %d: %d -> %d structures",
+                target_last_iter,
                 original_count,
                 len(reference_atoms),
             )
+            return reference_atoms
+
+        reference_atoms = self._load_xyz_structures(xyz_path)
+        cached_last_iter = int(meta.get("last_reference_iter", -1))
+        if cached_last_iter < target_last_iter:
+            new_atoms = self._load_reference_atoms_from_files(
+                self._sampling_reference_files(
+                    start_iter=cached_last_iter + 1,
+                    end_iter=target_last_iter,
+                    include_init=False,
+                )
+            )
+            new_atoms, _ = self._filter_atoms_by_shortest_distance(
+                new_atoms,
+                signature["shortest_d"],
+                "Sampling reference pool increment",
+            )
+            combined_atoms = reference_atoms + new_atoms
+            updated_atoms = self._compress_reference_atoms(
+                combined_atoms,
+                max_reference_points,
+                signature,
+                "Sampling reference pool increment",
+            )
+            self._write_sampling_reference_cache(
+                updated_atoms,
+                meta_path,
+                xyz_path,
+                signature,
+                target_last_iter,
+            )
+            dlog.info(
+                "Updated sampling reference cache from iterations <= %d to <= %d using %d new structures",
+                cached_last_iter,
+                target_last_iter,
+                len(new_atoms),
+            )
+            reference_atoms = updated_atoms
+
         dlog.info("Loaded %d reference structures for dataset-aware FPS", len(reference_atoms))
         return reference_atoms
 
@@ -295,6 +469,42 @@ class Nepactive(object):
             "min_dist": sampling_cfg.get("dataset_min_dist", 0.0),
             "nep_backend": sampling_cfg.get("dataset_backend", "auto"),
         }
+
+    def _final_candidate_sampling_kwargs(self) -> dict:
+        sampling_cfg = self._sampling_config(self.idata)
+        kwargs = self._sampling_descriptor_kwargs()
+        kwargs["r2_threshold"] = sampling_cfg.get("final_r2_threshold")
+        return kwargs
+
+    def _ase_model_config(self) -> dict:
+        return get_ase_model_config(self.idata)
+
+    def _ase_template_kwargs(self) -> dict:
+        cfg = self._ase_model_config()
+        return {
+            "ase_model_name": repr(cfg["model_name"]),
+            "ase_model_file": repr(cfg["model_file"]),
+            "ase_nep_backend": repr(cfg["nep_backend"]),
+        }
+
+    @staticmethod
+    def _write_sampling_stats(stats_path: str, stats: dict) -> None:
+        with open(stats_path, "w", encoding="utf-8") as f:
+            for key, value in stats.items():
+                f.write(f"{key}: {value}\n")
+
+    def _cap_run_steps(self, run_steps: int, context: str) -> int:
+        capped_steps = int(run_steps)
+        max_run_steps = int(self.idata.get("max_run_steps", 1200000) or 0)
+        if max_run_steps > 0 and capped_steps > max_run_steps:
+            dlog.info(
+                "%s capped run_steps from %d to max_run_steps=%d",
+                context,
+                capped_steps,
+                max_run_steps,
+            )
+            capped_steps = max_run_steps
+        return capped_steps
 
     def _write_global_candidate_pool(
         self,
@@ -316,23 +526,49 @@ class Nepactive(object):
             open(candidate_file, "w", encoding="utf-8").close()
             return 0
 
+        stats_path = os.path.join(os.path.dirname(candidate_file), "candidate_fps_stats.txt")
         if len(candidate_atoms) > max_candidate:
             reference_atoms = self._load_sampling_reference_structures()
-            selected_indices = select_structure_indices(
+            selected_indices, sampling_info = select_structure_indices_with_info(
                 candidate_atoms,
                 n_samples=max_candidate,
                 reference_atoms_list=reference_atoms,
-                **self._sampling_descriptor_kwargs(),
+                **self._final_candidate_sampling_kwargs(),
             )
             candidate_atoms = [candidate_atoms[index] for index in selected_indices]
+            total_candidates = len(existing_atoms or []) + sum(len(record.get("atoms", [])) for record in candidate_records)
             dlog.info(
                 "Global candidate FPS kept %d/%d structures against %d reference structures",
                 len(candidate_atoms),
-                len(existing_atoms or []) + sum(len(record.get("atoms", [])) for record in candidate_records),
+                total_candidates,
                 len(reference_atoms),
+            )
+            self._write_sampling_stats(
+                stats_path,
+                {
+                    "mode": "global_candidate_pool",
+                    "total_candidates": total_candidates,
+                    "selected_candidates": len(candidate_atoms),
+                    "reference_count": sampling_info.get("reference_count"),
+                    "descriptor_source": sampling_info.get("source"),
+                    "r2": sampling_info.get("r2"),
+                    "r2_threshold": sampling_info.get("r2_threshold"),
+                },
             )
         else:
             dlog.info("Global candidate pool kept all %d structures", len(candidate_atoms))
+            self._write_sampling_stats(
+                stats_path,
+                {
+                    "mode": "global_candidate_pool",
+                    "total_candidates": len(candidate_atoms),
+                    "selected_candidates": len(candidate_atoms),
+                    "reference_count": 0,
+                    "descriptor_source": "none",
+                    "r2": None,
+                    "r2_threshold": self._final_candidate_sampling_kwargs().get("r2_threshold"),
+                },
+            )
 
         with open(candidate_file, "w", encoding="utf-8") as candidate_f:
             write_extxyz(candidate_f, candidate_atoms)
@@ -372,7 +608,7 @@ class Nepactive(object):
             os.makedirs("init",exist_ok=True)
             os.chdir("init")
             if not os.path.exists(f"molecule.pdb"):
-                atoms.calc = MatterSimCalculator()
+                atoms.calc = create_ase_calculator(**self._ase_model_config())
                 opt = BFGS(atoms)
                 opt.run(fmax=0.05,steps=100)
                 write(f"molecule.pdb", atoms)
@@ -548,8 +784,7 @@ class Nepactive(object):
 
         python_interpreter:str = self.idata.get("python_interpreter")
         processes = []
-        self.pot_file:str = self.idata.get("pot_file")
-        pot_file =self.pot_file
+        ase_model_file = self._ase_model_config()["model_file"]
         self.gpu_available = self.idata.get("gpu_available")
         os.makedirs(work_dir, exist_ok=True)
         os.chdir(work_dir)
@@ -557,11 +792,11 @@ class Nepactive(object):
         if ase_ensemble_files:
             for index, file in enumerate(ase_ensemble_files):
                 task_name = f"task.{index:06d}"
-                # Ensure the task directory is created
                 task_dir = os.path.join(work_dir, task_name)
-                os.makedirs(task_dir, exist_ok=True)  
-                # Create the task directory, if it doesn't exist
-                os.system(f"ln -snf {pot_file} {task_dir}/model.pth")
+                os.makedirs(task_dir, exist_ok=True)
+                if ase_model_file:
+                    model_path = os.path.abspath(str(ase_model_file))
+                    os.system(f"ln -snf {model_path} {task_dir}/{os.path.basename(model_path)}")
                 os.system(f"ln -snf {file} {task_dir}")
         
         os.chdir(work_dir)
@@ -1213,7 +1448,6 @@ class Nepactive(object):
         self.run_steps_factor = self.idata.get("run_steps_factor",1.5)
         if self.ii == 0:
             run_steps = self.idata.get("ini_run_steps",100000)
-            self.run_steps = run_steps
         else:
             all_run_steps = np.loadtxt(f"{self.work_dir}/steps.txt",ndmin=1,encoding="utf-8")
             old_run_steps = all_run_steps[-1]
@@ -1221,8 +1455,9 @@ class Nepactive(object):
             if len(all_run_steps) > 1:
                 if all_run_steps[-2] > all_run_steps[-1]:
                     dlog.warning(f"The older run_steps is {old_run_steps}, the new run_steps is {all_run_steps[-1]},and the older one is bigger")
-            self.run_steps = run_steps
-            dlog.info(f"run_steps is {run_steps}")
+        run_steps = self._cap_run_steps(run_steps, f"iter.{self.ii:06d} sampling setup")
+        self.run_steps = run_steps
+        dlog.info(f"run_steps is {run_steps}")
         # if self.run_steps < 10000:
 
         if os.path.exists(f"{self.work_dir}/init/properties.txt"):
@@ -1235,8 +1470,11 @@ class Nepactive(object):
             if not real_p0:
                 dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
                 p0 = [0]
-            rho = self.idata.get("rho", property[0])
-            if rho != o_rho:
+            rho = self.idata.get("rho")
+            if rho is None:
+                rho = o_rho
+                dlog.info(f"rho is not set, keep original density {o_rho}")
+            elif rho != o_rho:
                 dlog.info(f"rho is {rho}, o_rho is {o_rho}, will scale v0")
                 v0 = [property[3] * o_rho / rho]  # scale v0 according to rho
         else:
@@ -1606,12 +1844,12 @@ class Nepactive(object):
                 indices_with_data = np.column_stack((candidate_indices, filtered_rows))
                 dlog.info(f"Task {ii} has {len(indices_with_data)} candidates before failed-frame trimming")
                 indices_with_data = indices_with_data[indices_with_data[:, 0] < failed_row_index]
-                dlog.info(f"Task {ii} keeps {len(indices_with_data)} candidates before local FPS")
+                dlog.info(f"Task {ii} keeps {len(indices_with_data)} candidates before local reduction")
 
                 if len(indices_with_data) == 0:
                     continue
 
-                if len(indices_with_data) > config['max_candidate_per_task']:
+                if config['sample_method'] == "fps" and len(indices_with_data) > config['max_candidate_per_task']:
                     candidate_atoms = [atoms_list[idx] for idx in indices_with_data[:, 0].astype(int)]
                     selected_local_indices = select_structure_indices(
                         candidate_atoms,
@@ -1680,7 +1918,10 @@ class Nepactive(object):
                 failed_row_indices=early_failed_indices,
                 failed_task_dirs=early_failed_tasks,
             )
-            self.run_steps = max(22000, int(self.run_steps*min_failed/frame_len), int(self.run_steps/self.run_steps_factor))
+            self.run_steps = self._cap_run_steps(
+                max(22000, int(self.run_steps*min_failed/frame_len), int(self.run_steps/self.run_steps_factor)),
+                f"iter.{self.ii:06d} failed-job recovery",
+            )
             dlog.info(f"Adjusted run_steps to {self.run_steps} for next iteration")
             self.write_steps()
             return True
@@ -1710,14 +1951,7 @@ class Nepactive(object):
 
     def _finalize_iteration(self, config):
         """完成迭代处理"""
-        if self.run_steps > config['max_run_steps']:
-            if self.ii >= config['max_iter']:
-                dlog.info(f"Reached max iteration: {config['max_iter']}, finished")
-                exit()
-            else:
-                self.run_steps = config['max_run_steps'] 
-                # / self.run_steps_factor
-        
+        self.run_steps = self._cap_run_steps(self.run_steps, f"iter.{self.ii:06d} finalize")
         self.write_steps()
         dlog.info("All frames processed successfully")
     
@@ -1747,7 +1981,7 @@ class Nepactive(object):
             atoms = read(os.path.join(failed_task_dirs[ii], "dump.xyz"), index = failed_row_index-2)
             struc_file = os.path.abspath(os.path.join(task_dir, "POSCAR"))
             write(struc_file, atoms)
-            py_file = continue_pytemplate.format(structure = struc_file,temperature = run_temp, steps = 20000)
+            py_file = continue_pytemplate.format(structure = struc_file, temperature = run_temp, steps = 20000, **self._ase_template_kwargs())
             with open(os.path.join(task_dir, "ensemble.py"), "w",encoding="utf-8") as f:
                 f.write(py_file)
 
@@ -1801,13 +2035,25 @@ class Nepactive(object):
             )
         if len(candidate_pool) > self.max_candidate:
             reference_atoms = self._load_sampling_reference_structures()
-            selected_indices = select_structure_indices(
+            selected_indices, sampling_info = select_structure_indices_with_info(
                 candidate_pool,
                 n_samples=self.max_candidate,
                 reference_atoms_list=reference_atoms,
-                **self._sampling_descriptor_kwargs(),
+                **self._final_candidate_sampling_kwargs(),
             )
             candidate_pool = [candidate_pool[i] for i in selected_indices]
+            self._write_sampling_stats(
+                os.path.join(label_dir, "candidate_fps_stats.txt"),
+                {
+                    "mode": "bad_job_rerun_pool",
+                    "total_candidates": len(existing_candidates) + len(trajs),
+                    "selected_candidates": len(candidate_pool),
+                    "reference_count": sampling_info.get("reference_count"),
+                    "descriptor_source": sampling_info.get("source"),
+                    "r2": sampling_info.get("r2"),
+                    "r2_threshold": sampling_info.get("r2_threshold"),
+                },
+            )
 
         os.chdir(label_dir)
         with open("candidate.xyz", "w", encoding="utf-8") as f:
@@ -2044,12 +2290,13 @@ class Nepactive(object):
         train_ratio = self.idata.get("training_ratio", 0.8)
         os.chdir(work_dir)
         atoms_list = read("candidate.xyz", index=":", format="extxyz")
-        self.pot_file = self.idata.get("pot_file")
-        # 创建MatterSimCalculator对象，用于计算原子能量
+        ase_model_cfg = self._ase_model_config()
         sampling_cfg = self._sampling_config(self.idata)
         Nepactive.run_mattersim(
             atoms_list=atoms_list,
-            pot_file=self.pot_file,
+            ase_model_name=ase_model_cfg["model_name"],
+            ase_model_file=ase_model_cfg["model_file"],
+            ase_nep_backend=ase_model_cfg["nep_backend"],
             train_ratio=train_ratio,
             sampling_method=sampling_cfg.get("dataset_method", "fps"),
             sampling_nep_file=sampling_cfg.get("dataset_nep_file", self.idata.get("nep_file")),
@@ -2062,7 +2309,9 @@ class Nepactive(object):
     def run_mattersim(
         cls,
         atoms_list: List[Atoms],
-        pot_file: str,
+        ase_model_name: str = "mattersim",
+        ase_model_file: Optional[str] = None,
+        ase_nep_backend: str = "gpu",
         train_ratio: float = 0.8,
         tqdm_use: Optional[bool] = True,
         sampling_method: str = "fps",
@@ -2071,7 +2320,12 @@ class Nepactive(object):
         sampling_min_dist: float = 0.0,
         sampling_backend: str = "auto",
     ):
-        calculator = MatterSimCalculator(load_path=pot_file,device="cuda")
+        calculator = create_ase_calculator(
+            model_name=ase_model_name,
+            model_file=ase_model_file,
+            device="cuda",
+            nep_backend=ase_nep_backend,
+        )
         if os.path.exists("candidate.traj"):
             os.remove("candidate.traj")
         traj = Trajectory('candidate.traj', mode='a')

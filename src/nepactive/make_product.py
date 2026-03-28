@@ -36,6 +36,7 @@ from ase import units
 # ============================================================
 
 MOLECULES = {
+    'C2H2': [2, 2, 0, 0],
     'CH4': [1, 4, 0, 0],
     'CO':  [1, 0, 1, 0],
     'CO2': [1, 0, 2, 0],
@@ -48,6 +49,7 @@ MOLECULES = {
 }
 
 MOLECULE_ENERGIES = {
+    'C2H2': -23.141634,
     'CO':  -14.747749,
     'NH3': -19.33091,
     'O2':  -9.876768,
@@ -64,6 +66,13 @@ ATOM_MATRIX = np.array([MOLECULES[name] for name in MOLECULE_NAMES]).T
 ENERGY_ARRAY = np.array([MOLECULE_ENERGIES[name] for name in MOLECULE_NAMES])
 
 PDB_DATA = {
+    'C2H2': (
+        "HETATM    1  H1  UNK     1      -1.674   0.000   0.000  1.00  0.00           H\n"
+        "HETATM    2  C1  UNK     1      -0.608   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    3  C2  UNK     1       0.608   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    4  H2  UNK     1       1.674   0.000   0.000  1.00  0.00           H\n"
+        "END\n"
+    ),
     'H2': (
         "HETATM    1  H1  UNK     1       0.000   0.000   0.000  1.00  0.00           H\n"
         "HETATM    2  H2  UNK     1       0.740   0.000   0.000  1.00  0.00           H\n"

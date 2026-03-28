@@ -39,6 +39,8 @@ nepactive reset           # 清理 task_finished/task_failed
 
 nep-identify POSCAR
 nep-product POSCAR
+nep-fps dump.xyz --number 2000
+nep-fps dump.xyz --r2 0.95
 ```
 
 也可以直接从源码入口运行：
@@ -84,6 +86,34 @@ iter.XXXXXX/
 - 主流程训练和 deviation 分析走 NEP 路径。
 - `shock_vel_test()` 默认使用当前迭代训练得到的 `iter.xxx/00.nep/task.000000/nep.txt`。
 
+### 主动学习 ASE 模型切换
+
+主动学习中的两个 ASE 路径现在统一支持两种基础模型：
+
+- `mattersim`
+- `nep89`
+
+覆盖范围：
+
+- 初始 `init` 数据集生成
+- `02.label` 候选结构标注
+- 坏任务恢复时的 ASE 续跑脚本
+
+推荐配置：
+
+```yaml
+ase_model: nep89                     # mattersim / nep89
+ase_model_file: null                 # 不写时，nep89 默认读取仓库顶层 resources/nep89_20250409.txt
+ase_nep_backend: gpu                 # 当 ase_model=nep89 时使用 gpu / cpu / auto
+label_engine: mattersim              # 这里表示走本地 ASE 标注路径；实际模型由 ase_model 决定
+```
+
+说明：
+
+- `ase_model: mattersim` 时，默认使用 MatterSim 预训练模型；如果你有自定义模型，也可以通过 `ase_model_file` 显式覆盖。
+- `ase_model: nep89` 时，默认从仓库顶层 `resources/nep89_20250409.txt` 加载；也可以用 `ase_model_file` 换成你自己的 `nep.txt`。
+- 旧参数 `pot_file` 仍然兼容，但现在等价于 `ase_model_file`，不再推荐作为主入口。
+
 ### `nepactive shock`
 
 - `shock` 子命令使用 `in.yaml` 中 `shock.pot` 指定的势函数类型。
@@ -118,6 +148,13 @@ nep_in_header: "type 4 H C N O"
 
 当前代码里，以下路径都已支持用 FPS 替代随机采样：
 
+- 也可以直接用命令行工具从任意轨迹/多结构文件中做 FPS：
+
+```bash
+nep-fps structurefile --number 2000
+nep-fps structurefile --r2 0.95
+```
+
 - 初始 `init` 数据切分
 - 每轮 `max_candidate` 候选池截断
 - MatterSim 标注后的 `iter_train/iter_test` 划分
@@ -132,6 +169,7 @@ sampling:
   needed_frames: 10000
   max_candidate: 1000
   max_reference_points: 10000
+  final_r2_threshold: null
 
   uncertainty_threshold: [0.3, 1]
   uncertainty_level: 1
@@ -165,7 +203,8 @@ sampling:
 - `sampling.dataset_descriptor: structural` 使用内置结构指纹做 FPS，不依赖 `nep.txt`。
 - `sampling.dataset_descriptor: nep` 使用本地 NEP native backend 计算描述符，需要 `sampling.dataset_nep_file`。
 - `sampling.init_descriptor: soap` 用于初始 `init` 数据的 FPS，依赖 `dscribe`。
-- `sampling.max_reference_points` 会先随机截断 reference 集，再做 dataset-aware FPS，避免距离矩阵过大。
+- `sampling.max_reference_points` 现在表示全局 reference 代表集上限；程序会维护一个落盘的增量 representative cache，而不是每轮对全历史 reference 全量重算。
+- `sampling.final_r2_threshold` 可用于最后一步全局 FPS 的提前停止；达到该描述符覆盖度后，不必再选满 `max_candidate`。
 - 一旦轨迹在第 `i` 帧出现异常，候选池只保留 `i` 之前的结构；异常帧及其后的结构不会参与后续 FPS。
 - 合并 `candidate.xyz` 前会再按 `shortest_d` 过滤最短原子距离异常的结构。
 - 如果你想强制暴露后端错误，就显式写 `gpu/cpu/native`，不要用 `auto`。
@@ -224,7 +263,10 @@ ini_train_steps: 10000
 train_steps: 5000
 training_ratio: 0.8
 nep_in_header: "type 4 H C N O"   # 推荐在 pot_inherit=true 时显式给出
-pot_file: /path/to/mattersim.pth
+ase_model: mattersim                # mattersim / nep89
+ase_model_file: null                # nep89 不写时默认读 resources/nep89_20250409.txt
+ase_nep_backend: gpu                # gpu / cpu / auto
+pot_file: null                      # 旧参数兼容；等价于 ase_model_file
 
 gpu_available: [0, 1, 2, 3]
 task_per_gpu: 1
