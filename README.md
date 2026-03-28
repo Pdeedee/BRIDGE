@@ -11,6 +11,8 @@
 在仓库根目录执行：
 
 ```bash
+uv pip install -e .
+# 或
 pip install -e .
 ```
 
@@ -45,12 +47,32 @@ pip install -e .
 - `Packmol`
 - 远程 VASP 环境（如果使用 `remote`/VASP 标注）
 
-### 本地 NEP backend 编译
+默认安装会自动尝试编译本地 NEP 扩展：
+
+- CPU 扩展：默认尝试编译
+- GPU 扩展：检测到 `nvcc`/`CUDA_HOME` 后自动尝试编译
+- 若 GPU 工具链不存在，安装不会因此失败
+
+可以用环境变量控制：
+
+```bash
+NEP_NATIVE_BUILD=none uv pip install -e .
+NEP_NATIVE_BUILD=cpu uv pip install -e .
+NEP_NATIVE_BUILD=all uv pip install -e .
+```
+
+### 本地 NEP backend 手动编译
 
 如果你要使用本地 `nep89` ASE 势或者更快的本地 NEP 描述符/偏差分析后端，可以按需编译 native backend：
 
 ```bash
 cd src/nepactive
+python build_native_nep.py
+```
+
+不带参数时默认等价于：
+
+```bash
 python build_native_nep.py build_ext --inplace
 ```
 
@@ -59,7 +81,11 @@ python build_native_nep.py build_ext --inplace
 - `nep_cpu*.so`
 - `nep_gpu*.so`
 
-这一步是可选的；主库安装不应该依赖它强制成功。
+如需强制重编译，可设置：
+
+```bash
+NEP_NATIVE_REBUILD=1 python build_native_nep.py
+```
 
 ## 命令行入口
 

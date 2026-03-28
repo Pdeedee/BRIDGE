@@ -4,22 +4,59 @@
 
 目的很简单：
 
-- 主库安装不依赖它
-- 编译失败不影响主流程安装
-- 用户需要更快的 native backend 时，再单独手工编译
+- editable install 时尽量自动尝试编译
+- GPU 工具链缺失时不阻塞主库安装
+- 需要更快的 native backend 时，也可以单独手工编译
+
+## 安装时自动编译
+
+在仓库根目录执行：
+
+```bash
+uv pip install -e .
+# 或
+pip install -e .
+```
+
+默认行为：
+
+- CPU backend：默认尝试编译
+- GPU backend：检测到 `nvcc` 或 `CUDA_HOME`/`CUDA_PATH` 后自动尝试编译
+- 没有 CUDA 工具链时：跳过 GPU backend，不让安装失败
+
+可以显式控制：
+
+```bash
+NEP_NATIVE_BUILD=none uv pip install -e .
+NEP_NATIVE_BUILD=cpu uv pip install -e .
+NEP_NATIVE_BUILD=gpu uv pip install -e .
+NEP_NATIVE_BUILD=all uv pip install -e .
+```
 
 ## 手工编译
 
-在 `nepactive` 根目录执行：
+在 `src/nepactive` 目录执行：
+
+```bash
+python build_native_nep.py
+```
+
+这条命令默认等价于：
 
 ```bash
 python build_native_nep.py build_ext --inplace
 ```
 
-成功后会在当前目录生成：
+成功后会在 `src/nepactive/` 下生成：
 
 - `nep_cpu*.so`
 - `nep_gpu*.so`
+
+如果已有 `.so` 且源码没有变化，脚本会跳过重复编译。需要强制重编译时：
+
+```bash
+NEP_NATIVE_REBUILD=1 python build_native_nep.py
+```
 
 ## 使用建议
 

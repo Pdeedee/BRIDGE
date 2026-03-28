@@ -174,7 +174,9 @@ class NativeNepCalculator:
 
         if self.backend == NepBackend.AUTO:
             raise ModuleNotFoundError(
-                "No local NEP native backend found. Build nep_cpu/nep_gpu first."
+                "No local NEP native backend found. "
+                "Run `uv pip install -e .` in the repo root or "
+                "`python src/nepactive/build_native_nep.py` to build nep_cpu/nep_gpu."
             )
         raise ModuleNotFoundError(f"Requested NEP backend '{self.backend.value}' is unavailable.")
 
