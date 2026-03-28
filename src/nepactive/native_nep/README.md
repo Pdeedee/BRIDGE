@@ -23,6 +23,7 @@ pip install -e .
 - CPU backend：默认尝试编译
 - GPU backend：检测到 `nvcc` 或 `CUDA_HOME`/`CUDA_PATH` 后自动尝试编译
 - 没有 CUDA 工具链时：跳过 GPU backend，不让安装失败
+- GPU 构建会输出当前 `.cu` 的编译进度、`gencode` 来源以及 `nvcc` 线程数
 
 可以显式控制：
 
@@ -31,6 +32,19 @@ NEP_NATIVE_BUILD=none uv pip install -e .
 NEP_NATIVE_BUILD=cpu uv pip install -e .
 NEP_NATIVE_BUILD=gpu uv pip install -e .
 NEP_NATIVE_BUILD=all uv pip install -e .
+```
+
+如果 GPU 编译很慢，优先显式指定目标架构，避免默认 fatbin 太宽：
+
+```bash
+CUDAARCHS=89 uv pip install -e .
+NEP_GPU_GENCODE="89" uv pip install -e .
+```
+
+如果是在没有驱动的登录节点编译，`nvidia-smi` 可能无法返回 compute capability，这时脚本会回退到默认架构集。建议直接指定：
+
+```bash
+CUDAARCHS=89 NEP_GPU_NVCC_THREADS=0 uv pip install -e .
 ```
 
 ## 手工编译

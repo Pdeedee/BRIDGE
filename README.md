@@ -52,6 +52,20 @@ pip install -e .
 - CPU 扩展：默认尝试编译
 - GPU 扩展：检测到 `nvcc`/`CUDA_HOME` 后自动尝试编译
 - 若 GPU 工具链不存在，安装不会因此失败
+- GPU 构建现在会输出当前 `.cu` 编译进度、使用的 `gencode` 来源和 `nvcc` 线程数，避免长时间只有 spinner
+
+如果 GPU 编译明显偏慢，优先用下面两种方式缩窄目标架构：
+
+```bash
+CUDAARCHS=89 uv pip install -e .
+NEP_GPU_GENCODE="89" uv pip install -e .
+```
+
+如果你在没有驱动的节点上编译，脚本可能无法自动识别本机 compute capability，这时会回退到较宽的默认架构集。可以显式指定：
+
+```bash
+CUDAARCHS=89 NEP_GPU_NVCC_THREADS=0 uv pip install -e .
+```
 
 可以用环境变量控制：
 
