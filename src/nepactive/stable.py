@@ -116,6 +116,10 @@ class BaseRun:
         tau_p = self.sdata.get("tau_p", 2000)
         pmode = self.sdata.get("pmode", "iso")
         p0 = getattr(self, 'p0', 0)
+        temperature_list = self.sdata.get("temperature", [3000])
+        temperature = temperature_list[0] if temperature_list else 3000
+        ensemble = self._resolve_init_ase_ensemble()
+        dlog.info(f"Using ASE init ensemble: {ensemble}")
         for ii, _ in enumerate(self.pressure_list):
             os.chdir(work_dir)
             task_dir = os.path.join(work_dir, f"task.{ii:03d}")
@@ -123,15 +127,63 @@ class BaseRun:
             os.chdir(task_dir)
             # 优先使用 POSCAR，兼容旧版 stable.pdb
             struc_file = "../structure/POSCAR" if os.path.exists("../structure/POSCAR") else "../structure/stable.pdb"
-            py_file = nphugo_scr_pytemplate.format(
-                structure=struc_file, e0=self.energy,
-                p0=p0, v0=self.r_v, dump_freq=dump_freq,
-                pressure=self.pressure_list[ii], steps=steps,
-                time_step=time_step, tau_t=tau_t, tau_p=tau_p,
-                pmode=pmode, **self._ase_template_kwargs()
-            )
+            if ensemble == "nvt":
+                py_file = nvt_pytemplate.format(
+                    structure=struc_file,
+                    temperature=temperature,
+                    steps=steps,
+                    **self._ase_template_kwargs(),
+                )
+            elif ensemble == "npt":
+                py_file = npt_pytemplate.format(
+                    structure=struc_file,
+                    temperature=temperature,
+                    pressure=self.pressure_list[ii],
+                    steps=steps,
+                    **self._ase_template_kwargs(),
+                )
+            elif ensemble in {"nphugo_scr", "nphugo_mttk", "nphugo"}:
+                py_file = nphugo_scr_pytemplate.format(
+                    structure=struc_file,
+                    e0=self.energy,
+                    p0=p0,
+                    v0=self.r_v,
+                    dump_freq=dump_freq,
+                    pressure=self.pressure_list[ii],
+                    steps=steps,
+                    time_step=time_step,
+                    tau_t=tau_t,
+                    tau_p=tau_p,
+                    pmode=pmode,
+                    **self._ase_template_kwargs(),
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported ASE init ensemble: {ensemble}. "
+                    "Supported values are nvt, npt, nphugo_scr, nphugo_mttk."
+                )
             with open("ensemble.py", "w", encoding='utf-8') as f:
                 f.write(py_file)
+
+    def _resolve_init_ase_ensemble(self) -> str:
+        sampling = self.idata.get("sampling", {})
+        general = sampling.get("general", {}) if isinstance(sampling, dict) else {}
+        ensembles = general.get("ensembles", [])
+        if isinstance(ensembles, str):
+            ensembles = [ensembles]
+
+        aliases = {
+            "nphugo": "nphugo_scr",
+            "nphugo_scr": "nphugo_scr",
+            "nphugo_mttk": "nphugo_mttk",
+            "npt": "npt",
+            "nvt": "nvt",
+        }
+        for ensemble in ensembles:
+            normalized = aliases.get(str(ensemble).strip().lower())
+            if normalized is not None:
+                return normalized
+        return "nphugo_scr"
 
     def run_py_tasks(self):
         os.chdir(self.work_dir)

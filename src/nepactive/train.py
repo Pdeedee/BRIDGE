@@ -721,8 +721,8 @@ class Nepactive(object):
                 sampling_cfg = self._sampling_general_config(self.idata)
                 self.idata["structure_files"]=["POSCAR","init/struc.000/structure/POSCAR"]
                 sampling_cfg["structure_id"] = sampling_cfg.get("structure_id", [[0, 1], [0, 1]])
-                sampling_cfg["temperature"] = [3000]
-                sampling_cfg["ensemble"] = ["nphugo_scr","nvt"]
+                sampling_cfg["temperature"] = sampling_cfg.get("temperature", [3000])
+                sampling_cfg["ensembles"] = sampling_cfg.get("ensembles", ["nphugo_scr", "nvt"])
                 try:
                     for ii in range(init_run.struc_num):
                         os.chdir(work_dir)
@@ -739,8 +739,8 @@ class Nepactive(object):
                         self.idata.setdefault("init", {})["struc_num"] = 0
                         self.idata["structure_files"] = self.idata.get("structure_files",["POSCAR"])
                         sampling_cfg["structure_id"] = sampling_cfg.get("structure_id", [[0], [0]])
-                        sampling_cfg["ensemble"] = ["nphugo_scr","nvt"]
-                        sampling_cfg["temperature"] = [3000]
+                        sampling_cfg["ensembles"] = sampling_cfg.get("ensembles", ["nphugo_scr", "nvt"])
+                        sampling_cfg["temperature"] = sampling_cfg.get("temperature", [3000])
                         dlog.warning("Exception occurred, set struc_num to 0 and continue")
 
         # 处理用户在 in.yaml 中额外提供的结构文件（跳过自动生成的 init/struc.000/structure/POSCAR）
@@ -890,14 +890,14 @@ class Nepactive(object):
                 data.setdefault("init", {})["struc_num"] = 0
                 data["structure_files"] = self.idata.get("structure_files",["POSCAR"])
                 sampling_cfg["structure_id"] = current_sampling_cfg.get("structure_id", [[0]])
-                sampling_cfg["ensemble"] = ["nphugo_scr","nvt"]
-                sampling_cfg["temperature"] = [3000]
+                sampling_cfg["ensembles"] = current_sampling_cfg.get("ensembles", sampling_cfg.get("ensembles", ["nphugo_scr", "nvt"]))
+                sampling_cfg["temperature"] = current_sampling_cfg.get("temperature", sampling_cfg.get("temperature", [3000]))
                 sampling_cfg["structure_id"] = [[0],[0]]
             else:
                 data.setdefault("init", {})["struc_num"] = 1
                 data["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
-                sampling_cfg["ensemble"] = ["nphugo_scr","nvt"]
-                sampling_cfg["temperature"] = [3000]
+                sampling_cfg["ensembles"] = current_sampling_cfg.get("ensembles", sampling_cfg.get("ensembles", ["nphugo_scr", "nvt"]))
+                sampling_cfg["temperature"] = current_sampling_cfg.get("temperature", sampling_cfg.get("temperature", [3000]))
                 sampling_cfg["structure_id"] = [[0,1],[0,1]]
         else:
             self.idata.setdefault("init", {})["struc_num"] = 0
