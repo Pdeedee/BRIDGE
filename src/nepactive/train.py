@@ -28,7 +28,7 @@ from nepactive.force import force_main
 from nepactive.packmol import make_structure
 from nepactive.plt import ase_plt, gpumdplt, nep_plt
 from nepactive.remote import Remotetask
-from nepactive.nep_backend import create_ase_calculator, get_ase_model_config
+from nepactive.nep_backend import create_ase_calculator, get_ase_model_config, resolve_ase_model_path
 from nepactive.sampling import select_structure_indices, select_structure_indices_with_info, split_train_test_structures
 from nepactive.stable import InitRun, ShockRun
 from nepactive.template import (
@@ -184,6 +184,54 @@ class Nepactive(object):
                     "Set nep_in_header explicitly in in.yaml to keep element order fixed."
                 )
         return current_header
+
+    def _resolve_user_nep_in_template_path(self) -> Optional[str]:
+        explicit_template = self.idata.get("nep_template")
+        candidates: list[str] = []
+        if explicit_template:
+            candidates.append(
+                explicit_template if os.path.isabs(explicit_template) else os.path.join(self.work_dir, explicit_template)
+            )
+        candidates.append(os.path.join(self.work_dir, "nep.in"))
+
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+        return None
+
+    @staticmethod
+    def _override_nep_generation(nep_in_text: str, train_steps: int) -> str:
+        lines = nep_in_text.splitlines()
+        generation_line = f"generation    {int(train_steps)}"
+        replaced = False
+        new_lines: list[str] = []
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("generation"):
+                indent = line[: len(line) - len(line.lstrip())]
+                new_lines.append(f"{indent}{generation_line}")
+                replaced = True
+            else:
+                new_lines.append(line)
+
+        if not replaced:
+            if new_lines and new_lines[-1].strip():
+                new_lines.append("")
+            new_lines.append(generation_line)
+
+        return "\n".join(new_lines).rstrip() + "\n"
+
+    def _build_nep_in_content(self, task_index: int, pot_inherit: bool, train_steps: int) -> str:
+        user_template_path = self._resolve_user_nep_in_template_path()
+        if user_template_path:
+            with open(user_template_path, "r", encoding="utf-8") as f:
+                user_nep_in = f.read()
+            dlog.info("Using user-provided nep.in template: %s", user_template_path)
+            return self._override_nep_generation(user_nep_in, train_steps)
+
+        nep_in_header = self._resolve_nep_in_header(task_index, pot_inherit=pot_inherit)
+        return nep_in_template.format(train_steps=train_steps, nep_in_header=nep_in_header)
 
     @staticmethod
     def _ensure_atoms_list(atoms_obj) -> list[Atoms]:
@@ -344,6 +392,12 @@ class Nepactive(object):
             return reference_atoms
 
         sampling_kwargs = dict(signature["descriptor_kwargs"])
+        sampling_kwargs.update(
+            self._sampling_pca_plot_kwargs(
+                os.path.join(self.work_dir, ".sampling_reference_cache_pca.png"),
+                "Sampling reference representative set",
+            )
+        )
         selected_indices, sampling_info = select_structure_indices_with_info(
             reference_atoms,
             n_samples=max_reference_points,
@@ -463,12 +517,50 @@ class Nepactive(object):
 
     def _sampling_descriptor_kwargs(self) -> dict:
         sampling_cfg = self._sampling_config(self.idata)
+        dataset_descriptor = sampling_cfg.get("dataset_descriptor", "nep")
         return {
             "method": sampling_cfg.get("dataset_method", "fps"),
-            "descriptor_model": sampling_cfg.get("dataset_nep_file", self.idata.get("nep_file")),
-            "descriptor_mode": sampling_cfg.get("dataset_descriptor", "auto"),
+            "descriptor_model": self._resolve_sampling_nep_file(
+                sampling_cfg.get("dataset_nep_file"),
+                stage="dataset",
+            ),
+            "descriptor_mode": dataset_descriptor,
             "min_dist": sampling_cfg.get("dataset_min_dist", 0.0),
             "nep_backend": sampling_cfg.get("dataset_backend", "auto"),
+        }
+
+    def _resolve_sampling_nep_file(self, explicit_model: Optional[str] = None, stage: str = "dataset") -> Optional[str]:
+        if explicit_model:
+            return explicit_model
+        legacy_model = self.idata.get("nep_file")
+        if legacy_model:
+            return legacy_model
+        if str(stage).lower() == "init":
+            resolved = resolve_ase_model_path("nep89", None)
+            return None if resolved is None else str(resolved)
+
+        sampling_cfg = self._sampling_config(self.idata)
+        fps_pot = str(sampling_cfg.get("fps_pot", "nep89") or "nep89").lower()
+        if fps_pot == "nep89":
+            resolved = resolve_ase_model_path("nep89", None)
+            return None if resolved is None else str(resolved)
+        if fps_pot == "self":
+            current_nep = os.path.join(self.iter_dir, "00.nep", "task.000000", "nep.txt")
+            if not os.path.isfile(current_nep):
+                raise FileNotFoundError(
+                    f"sampling.fps_pot=self requires current iteration NEP model: {current_nep}"
+                )
+            return current_nep
+        raise ValueError(f"Unsupported sampling.fps_pot: {fps_pot}. Use 'nep89' or 'self'.")
+
+    def _sampling_pca_plot_kwargs(self, output_path: str, title: str) -> dict:
+        sampling_cfg = self._sampling_config(self.idata)
+        if not bool(sampling_cfg.get("fps_pca_plot", True)):
+            return {}
+        return {
+            "pca_plot_path": output_path,
+            "pca_plot_title": title,
+            "pca_plot_max_points": sampling_cfg.get("fps_pca_max_points"),
         }
 
     def _final_candidate_sampling_kwargs(self) -> dict:
@@ -535,6 +627,10 @@ class Nepactive(object):
                 n_samples=max_candidate,
                 reference_atoms_list=reference_atoms,
                 **self._final_candidate_sampling_kwargs(),
+                **self._sampling_pca_plot_kwargs(
+                    os.path.join(os.path.dirname(candidate_file), "candidate_fps_pca.png"),
+                    "Global candidate FPS coverage",
+                ),
             )
             candidate_atoms = [candidate_atoms[index] for index in selected_indices]
             total_candidates = len(existing_atoms or []) + sum(len(record.get("atoms", [])) for record in candidate_records)
@@ -554,6 +650,7 @@ class Nepactive(object):
                     "descriptor_source": sampling_info.get("source"),
                     "r2": sampling_info.get("r2"),
                     "r2_threshold": sampling_info.get("r2_threshold"),
+                    "plot_path": sampling_info.get("plot_path"),
                 },
             )
         else:
@@ -866,14 +963,22 @@ class Nepactive(object):
 
         write_extxyz("init/init.xyz", atoms)
         sampling_cfg = self._sampling_config(self.idata)
+        init_descriptor = sampling_cfg.get("init_descriptor", sampling_cfg.get("dataset_descriptor", "nep"))
         train, test = split_train_test_structures(
             atoms,
             training_ratio=training_ratio,
             method=sampling_cfg.get("init_method", sampling_cfg.get("dataset_method", "fps")),
-            descriptor_model=sampling_cfg.get("init_nep_file", sampling_cfg.get("dataset_nep_file", self.idata.get("nep_file"))),
-            descriptor_mode=sampling_cfg.get("init_descriptor", sampling_cfg.get("dataset_descriptor", "soap")),
+            descriptor_model=self._resolve_sampling_nep_file(
+                sampling_cfg.get("init_nep_file", sampling_cfg.get("dataset_nep_file")),
+                stage="init",
+            ),
+            descriptor_mode=init_descriptor,
             min_dist=sampling_cfg.get("init_min_dist", sampling_cfg.get("dataset_min_dist", 0.0)),
             nep_backend=sampling_cfg.get("init_backend", sampling_cfg.get("dataset_backend", "auto")),
+            **self._sampling_pca_plot_kwargs(
+                os.path.join(self.work_dir, "init", "init_fps_pca.png"),
+                "Init train/test FPS coverage",
+            ),
         )
         write_extxyz("init/iter_train.xyz", train)
         write_extxyz("init/iter_test.xyz", test)
@@ -1141,12 +1246,19 @@ class Nepactive(object):
                     os.symlink("../dataset/train.xyz", "train.xyz")
                 if not os.path.isfile("test.xyz"):
                     os.symlink("../dataset/test.xyz", "test.xyz")
-                nep_in_header = self._resolve_nep_in_header(jj, pot_inherit=pot_inherit)
                 if self.ii == 0:
                     ini_train_steps = self.idata.get("ini_train_steps", 10000)
-                    nep_in = nep_in_template.format(train_steps=ini_train_steps, nep_in_header=nep_in_header)
+                    nep_in = self._build_nep_in_content(
+                        jj,
+                        pot_inherit=pot_inherit,
+                        train_steps=ini_train_steps,
+                    )
                 else:
-                    nep_in = nep_in_template.format(train_steps=train_steps, nep_in_header=nep_in_header)
+                    nep_in = self._build_nep_in_content(
+                        jj,
+                        pot_inherit=pot_inherit,
+                        train_steps=train_steps,
+                    )
                 with open("nep.in", "w", encoding="utf-8") as f:
                     f.write(nep_in)
                 
@@ -2047,6 +2159,10 @@ class Nepactive(object):
                 n_samples=self.max_candidate,
                 reference_atoms_list=reference_atoms,
                 **self._final_candidate_sampling_kwargs(),
+                **self._sampling_pca_plot_kwargs(
+                    os.path.join(label_dir, "candidate_fps_pca.png"),
+                    "Bad-job rerun candidate FPS coverage",
+                ),
             )
             candidate_pool = [candidate_pool[i] for i in selected_indices]
             self._write_sampling_stats(
@@ -2059,6 +2175,7 @@ class Nepactive(object):
                     "descriptor_source": sampling_info.get("source"),
                     "r2": sampling_info.get("r2"),
                     "r2_threshold": sampling_info.get("r2_threshold"),
+                    "plot_path": sampling_info.get("plot_path"),
                 },
             )
 
@@ -2299,6 +2416,7 @@ class Nepactive(object):
         atoms_list = read("candidate.xyz", index=":", format="extxyz")
         ase_model_cfg = self._ase_model_config()
         sampling_cfg = self._sampling_config(self.idata)
+        sampling_descriptor = sampling_cfg.get("dataset_descriptor", "nep")
         Nepactive.run_mattersim(
             atoms_list=atoms_list,
             ase_model_name=ase_model_cfg["model_name"],
@@ -2306,10 +2424,15 @@ class Nepactive(object):
             ase_nep_backend=ase_model_cfg["nep_backend"],
             train_ratio=train_ratio,
             sampling_method=sampling_cfg.get("dataset_method", "fps"),
-            sampling_nep_file=sampling_cfg.get("dataset_nep_file", self.idata.get("nep_file")),
-            sampling_descriptor=sampling_cfg.get("dataset_descriptor", "auto"),
+            sampling_nep_file=self._resolve_sampling_nep_file(
+                sampling_cfg.get("dataset_nep_file"),
+                stage="dataset",
+            ),
+            sampling_descriptor=sampling_descriptor,
             sampling_min_dist=sampling_cfg.get("dataset_min_dist", 0.0),
             sampling_backend=sampling_cfg.get("dataset_backend", "auto"),
+            sampling_pca_plot=bool(sampling_cfg.get("fps_pca_plot", True)),
+            sampling_pca_max_points=sampling_cfg.get("fps_pca_max_points"),
         )
 
     @classmethod
@@ -2326,6 +2449,8 @@ class Nepactive(object):
         sampling_descriptor: str = "auto",
         sampling_min_dist: float = 0.0,
         sampling_backend: str = "auto",
+        sampling_pca_plot: bool = True,
+        sampling_pca_max_points: Optional[int] = None,
     ):
         calculator = create_ase_calculator(
             model_name=ase_model_name,
@@ -2371,6 +2496,9 @@ class Nepactive(object):
             descriptor_mode=sampling_descriptor,
             min_dist=sampling_min_dist,
             nep_backend=sampling_backend,
+            pca_plot_path="train_test_fps_pca.png" if sampling_pca_plot else None,
+            pca_plot_title="Train/test FPS coverage" if sampling_pca_plot else None,
+            pca_plot_max_points=sampling_pca_max_points,
         )
         if train:
             write_extxyz("iter_train.xyz",train)

@@ -208,6 +208,110 @@ def _resolve_descriptor_model(descriptor_model: Optional[str]) -> Optional[str]:
     return None
 
 
+def _resolve_plot_subset(count: int, max_points: Optional[int]) -> np.ndarray:
+    if count <= 0:
+        return np.array([], dtype=int)
+    if max_points is None:
+        return np.arange(count, dtype=int)
+    max_points = int(max_points)
+    if max_points <= 0 or count <= max_points:
+        return np.arange(count, dtype=int)
+    return np.linspace(0, count - 1, num=max_points, dtype=int)
+
+
+def _compute_pca_2d(descriptors: np.ndarray) -> np.ndarray:
+    array = np.asarray(descriptors, dtype=np.float32)
+    if array.size == 0:
+        return np.zeros((0, 2), dtype=np.float32)
+    if array.ndim == 1:
+        array = array.reshape(1, -1)
+
+    centered = array - np.mean(array, axis=0, keepdims=True)
+    coords = np.zeros((centered.shape[0], 2), dtype=np.float32)
+    if centered.shape[1] == 0 or centered.shape[0] == 0:
+        return coords
+    if centered.shape[1] == 1:
+        coords[:, 0] = centered[:, 0]
+        return coords
+
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    basis = vt[: min(2, vt.shape[0])].T
+    projected = centered @ basis
+    coords[:, : projected.shape[1]] = projected
+    return coords
+
+
+def write_fps_pca_plot(
+    descriptors: np.ndarray,
+    selected_indices: list[int],
+    output_path: str | Path,
+    reference_descriptors: Optional[np.ndarray] = None,
+    title: Optional[str] = None,
+    max_points: Optional[int] = None,
+) -> str:
+    candidate = np.asarray(descriptors, dtype=np.float32)
+    if candidate.ndim == 1:
+        candidate = candidate.reshape(1, -1)
+    reference = None
+    if isinstance(reference_descriptors, np.ndarray) and reference_descriptors.size != 0:
+        reference = np.asarray(reference_descriptors, dtype=np.float32)
+        if reference.ndim == 1:
+            reference = reference.reshape(1, -1)
+
+    combined = candidate if reference is None else np.vstack([reference, candidate])
+    coords = _compute_pca_2d(combined)
+    ref_count = 0 if reference is None else int(reference.shape[0])
+    candidate_coords = coords[ref_count:]
+    reference_coords = coords[:ref_count]
+    selected = np.asarray(sorted({int(index) for index in selected_indices if 0 <= int(index) < len(candidate)}), dtype=int)
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    output = Path(output_path).expanduser()
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(6, 5), dpi=120)
+    if ref_count > 0:
+        ref_plot_idx = _resolve_plot_subset(ref_count, max_points)
+        ax.scatter(
+            reference_coords[ref_plot_idx, 0],
+            reference_coords[ref_plot_idx, 1],
+            s=4,
+            alpha=0.15,
+            label=f"reference ({ref_count})",
+        )
+
+    candidate_plot_idx = _resolve_plot_subset(len(candidate_coords), max_points)
+    if candidate_plot_idx.size:
+        ax.scatter(
+            candidate_coords[candidate_plot_idx, 0],
+            candidate_coords[candidate_plot_idx, 1],
+            s=8,
+            alpha=0.35,
+            label=f"candidate ({len(candidate_coords)})",
+        )
+    if selected.size:
+        ax.scatter(
+            candidate_coords[selected, 0],
+            candidate_coords[selected, 1],
+            s=14,
+            alpha=0.9,
+            label=f"selected ({len(selected)})",
+        )
+
+    ax.set_xlabel("PC1")
+    ax.set_ylabel("PC2")
+    ax.set_title(title or "FPS Coverage PCA")
+    ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output)
+    plt.close(fig)
+    return str(output.resolve())
+
+
 def compute_structure_descriptors(
     atoms_list: list[Atoms],
     descriptor_model: Optional[str] = None,
@@ -256,6 +360,9 @@ def select_structure_indices_with_info(
     nep_backend: str = "auto",
     reference_atoms_list: Optional[list[Atoms]] = None,
     r2_threshold: Optional[float] = None,
+    pca_plot_path: Optional[str] = None,
+    pca_plot_title: Optional[str] = None,
+    pca_plot_max_points: Optional[int] = None,
 ) -> tuple[list[int], dict]:
     total = len(atoms_list)
     info = {
@@ -263,6 +370,7 @@ def select_structure_indices_with_info(
         "reference_count": 0,
         "r2": None,
         "r2_threshold": r2_threshold,
+        "plot_path": None,
     }
     if n_samples <= 0 or total == 0:
         return [], info
@@ -331,6 +439,18 @@ def select_structure_indices_with_info(
             source,
             len(reference_atoms),
         )
+    if pca_plot_path:
+        try:
+            info["plot_path"] = write_fps_pca_plot(
+                descriptors,
+                indices,
+                output_path=pca_plot_path,
+                reference_descriptors=reference_descriptors,
+                title=pca_plot_title,
+                max_points=pca_plot_max_points,
+            )
+        except Exception as exc:
+            dlog.warning("Failed to write FPS PCA plot to %s: %s", pca_plot_path, exc)
     return sorted(indices), info
 
 
@@ -344,6 +464,9 @@ def select_structure_indices(
     nep_backend: str = "auto",
     reference_atoms_list: Optional[list[Atoms]] = None,
     r2_threshold: Optional[float] = None,
+    pca_plot_path: Optional[str] = None,
+    pca_plot_title: Optional[str] = None,
+    pca_plot_max_points: Optional[int] = None,
 ) -> list[int]:
     indices, _ = select_structure_indices_with_info(
         atoms_list,
@@ -355,6 +478,9 @@ def select_structure_indices(
         nep_backend=nep_backend,
         reference_atoms_list=reference_atoms_list,
         r2_threshold=r2_threshold,
+        pca_plot_path=pca_plot_path,
+        pca_plot_title=pca_plot_title,
+        pca_plot_max_points=pca_plot_max_points,
     )
     return indices
 
@@ -367,6 +493,9 @@ def split_train_test_structures(
     descriptor_mode: str = "auto",
     min_dist: float = 0.0,
     nep_backend: str = "auto",
+    pca_plot_path: Optional[str] = None,
+    pca_plot_title: Optional[str] = None,
+    pca_plot_max_points: Optional[int] = None,
 ) -> tuple[list[Atoms], list[Atoms]]:
     total = len(atoms_list)
     if total == 0:
@@ -390,6 +519,9 @@ def split_train_test_structures(
             descriptor_mode=descriptor_mode,
             min_dist=min_dist,
             nep_backend=nep_backend,
+            pca_plot_path=pca_plot_path,
+            pca_plot_title=pca_plot_title,
+            pca_plot_max_points=pca_plot_max_points,
         )
     )
     train = [atoms for index, atoms in enumerate(atoms_list) if index not in test_indices]
@@ -415,6 +547,9 @@ def run_fps_cli(
     min_dist: float = 0.0,
     reference: Optional[str] = None,
     reference_index: str = ":",
+    pca_plot: Optional[str] = None,
+    pca_title: Optional[str] = None,
+    pca_max_points: Optional[int] = None,
 ) -> dict:
     atoms_list = _load_atoms_from_file(structure_file, index=index)
     if not atoms_list:
@@ -442,6 +577,9 @@ def run_fps_cli(
         nep_backend=backend,
         reference_atoms_list=reference_atoms_list,
         r2_threshold=r2_threshold,
+        pca_plot_path=pca_plot,
+        pca_plot_title=pca_title,
+        pca_plot_max_points=pca_max_points,
     )
     selected_atoms = [atoms_list[i] for i in selected_indices]
     write(output, selected_atoms)
@@ -457,6 +595,7 @@ def run_fps_cli(
         "reference_count": info.get("reference_count"),
         "r2": info.get("r2"),
         "r2_threshold": info.get("r2_threshold"),
+        "plot_path": info.get("plot_path"),
     }
     return result
 
@@ -476,6 +615,9 @@ def cli() -> None:
     parser.add_argument("--min-dist", type=float, default=0.0, help="Stop FPS when min distance falls below this threshold")
     parser.add_argument("--reference", default=None, help="Optional reference trajectory/file used as an already-covered dataset")
     parser.add_argument("--reference-index", default=":", help="ASE index for the reference file")
+    parser.add_argument("--pca-plot", default=None, help="Optional output PNG path for a PCA coverage plot")
+    parser.add_argument("--pca-title", default=None, help="Optional title used by --pca-plot")
+    parser.add_argument("--pca-max-points", type=int, default=None, help="Optional per-series plotting cap used by --pca-plot")
     args = parser.parse_args()
 
     if args.number is None and args.r2_threshold is None:
@@ -493,6 +635,9 @@ def cli() -> None:
         min_dist=args.min_dist,
         reference=args.reference,
         reference_index=args.reference_index,
+        pca_plot=args.pca_plot,
+        pca_title=args.pca_title,
+        pca_max_points=args.pca_max_points,
     )
 
     print(f"Input: {result['input']}")
@@ -502,9 +647,9 @@ def cli() -> None:
     print(f"Reference count: {result['reference_count']}")
     print(f"R2: {result['r2']}")
     print(f"R2 threshold: {result['r2_threshold']}")
+    print(f"PCA plot: {result['plot_path']}")
     print(f"Indices: {result['indices']}")
 
 
 if __name__ == "__main__":
     cli()
-

@@ -594,12 +594,19 @@ class Nepactive_OB(Nepactive):
                 os.symlink("../dataset/train.xyz","train.xyz")
             if not os.path.isfile("test.xyz"):
                 os.symlink("../dataset/test.xyz","test.xyz")
-            nep_in_header = self._resolve_nep_in_header(jj, pot_inherit=pot_inherit)
             if self.ii == 0:
                 ini_train_steps = self.idata.get("ini_train_steps", 10000)
-                nep_in = nep_in_template.format(train_steps=ini_train_steps,nep_in_header=nep_in_header)
+                nep_in = self._build_nep_in_content(
+                    jj,
+                    pot_inherit=pot_inherit,
+                    train_steps=ini_train_steps,
+                )
             else:
-                nep_in = nep_in_template.format(train_steps=train_steps,nep_in_header=nep_in_header)
+                nep_in = self._build_nep_in_content(
+                    jj,
+                    pot_inherit=pot_inherit,
+                    train_steps=train_steps,
+                )
             with open("nep.in", "w", encoding="utf-8") as f:
                 f.write(nep_in)
             # os.symlink(nep_template, "nep.in")

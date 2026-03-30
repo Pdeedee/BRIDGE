@@ -152,10 +152,12 @@ sampling:
   needed_frames: 10000
   max_candidate: 1000
   deviation_backend: auto
+  fps_pot: nep89
   init_method: fps
-  init_descriptor: soap
+  init_descriptor: nep
   dataset_method: fps
-  dataset_descriptor: structural
+  dataset_descriptor: nep
+  fps_pca_plot: true
 
 shock:
   structure: POSCAR
@@ -163,6 +165,17 @@ shock:
   steps: 100000
   time_step: 0.4
   pot: mattersim
+```
+
+如果项目根目录下放了自定义 `nep.in`，训练时会优先把它当作模板使用；程序仍会按当前轮次自动覆盖其中的 `generation`：
+
+- 第 0 轮使用 `ini_train_steps`
+- 后续轮次使用 `train_steps`
+
+如果不想把模板命名为根目录 `nep.in`，也可以在 `in.yaml` 里显式设置：
+
+```yaml
+nep_template: prep/nep.in
 ```
 
 如果你启用了：
@@ -190,6 +203,11 @@ nep_in_header: "type 4 H C N O"
 
 - `ase_model: mattersim` 使用 MatterSim 路径
 - `ase_model: nep89` 使用本地 `nep89` 模型，可配合本地 CPU/GPU backend
+- 当 `sampling.init_descriptor` 设为 `nep` 且未显式给出 `init_nep_file` 时，init FPS 默认使用仓库根目录的 [resources/nep89_20250409.txt](/workplace/liuzf/code/BRIDGE/resources/nep89_20250409.txt)
+- 当 `sampling.dataset_descriptor` 设为 `nep` 且未显式给出 `dataset_nep_file` 时，后续 FPS 由 `sampling.fps_pot` 控制：
+- `fps_pot: nep89` 使用仓库自带的 `resources/nep89_20250409.txt`
+- `fps_pot: self` 使用当前迭代 `00.nep/task.000000/nep.txt`
+- `sampling.fps_pca_plot: true` 时，会在每次 FPS 采样后额外输出 PCA 覆盖图；图直接复用本次 FPS 已经算好的结构级 descriptor，不会重复算描述符
 - `shock.pot` 可在 `mattersim` 和 `nep` 间切换
 
 `nep-fps` 提供独立的 farthest point sampling 工具，例如：
@@ -198,6 +216,7 @@ nep_in_header: "type 4 H C N O"
 nep-fps dump.xyz --number 2000
 nep-fps dump.xyz --r2 0.95
 nep-fps dump.xyz --number 500 --reference train.xyz
+nep-fps dump.xyz --descriptor nep --model resources/nep89_20250409.txt --pca-plot fps_pca.png
 ```
 
 更多采样和后端参数说明见源码内配置模板与相关模块。
