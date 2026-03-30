@@ -112,6 +112,8 @@ nepactive reset           # 清理 task_finished/task_failed
 nep-identify POSCAR
 nep-product POSCAR
 nep-fps dump.xyz --number 2000
+nep-plt                   # 默认读取当前目录并自动识别 md.log / thermo.out / loss.out
+nep-plt iter.000000/01.gpumd/task.000000
 ```
 
 也可以直接从源码入口运行：
