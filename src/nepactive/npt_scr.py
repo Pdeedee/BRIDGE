@@ -28,6 +28,9 @@ K_B = units.kB  # eV/K
 # BDP thermostat utilities (from svr_utilities.cuh)
 # ============================================================
 
+ASE_VOIGT_ORDER = "xx yy zz yz xz xy"
+GPUMD_THERMO_ORDER = "xx yy zz xy xz yz"
+
 def gasdev(rng: np.random.Generator) -> float:
     """Standard normal deviate. Matches GPUMD gasdev()."""
     return rng.standard_normal()
@@ -166,20 +169,14 @@ def cpu_pressure_triclinic(rng, target_temperature, target_pressure,
     Triclinic SCR barostat. Returns mu[3x3].
     Matches GPUMD cpu_pressure_triclinic().
 
-    Note on index mapping:
-      GPUMD thermo order: [xx, yy, zz, xy, xz, yz]
-      ASE Voigt order:    [xx, yy, zz, yz, xz, xy]
-      target_pressure/p_coupling: Voigt order [xx, yy, zz, yz, xz, xy]
+    Internal convention in this Python port:
+      target_pressure / p_coupling / stress_voigt all use ASE Voigt order
+      [xx, yy, zz, yz, xz, xy].
 
-    GPUMD source (line 174-179):
-      mu[0,0] = 1 - tau[0]*(p0[0] - p[0])   # xx
-      mu[1,1] = 1 - tau[1]*(p0[1] - p[1])   # yy
-      mu[2,2] = 1 - tau[2]*(p0[2] - p[2])   # zz
-      mu_xy = -tau[5]*(p0[5] - p[3])         # xy: voigt[5], thermo[3]
-      mu_xz = -tau[4]*(p0[4] - p[4])         # xz: voigt[4], thermo[4]
-      mu_yz = -tau[3]*(p0[3] - p[5])         # yz: voigt[3], thermo[5]
-
-    Since ASE gives us Voigt order directly, stress_voigt[5]=xy, etc.
+    GPUMD's thermo buffer is different: [xx, yy, zz, xy, xz, yz].
+    Since ASE already gives us Voigt order directly, we map via explicit
+    symmetric-tensor reconstruction instead of imitating GPUMD's raw buffer
+    indexing.
     """
     p0 = target_pressure  # Voigt: [xx, yy, zz, yz, xz, xy]
     p = stress_voigt       # Voigt: [xx, yy, zz, yz, xz, xy]
@@ -199,12 +196,9 @@ def cpu_pressure_triclinic(rng, target_temperature, target_pressure,
     # yz: Voigt index 3 -> mu[1,2], mu[2,1]
     mu[1, 2] = mu[2, 1] = -tau[3] * (p0[3] - p[3])
 
-    # Stochastic part: p_coupling as 3x3 matrix
-    tau_3x3 = np.array([
-        [tau[0], tau[5], tau[4]],
-        [tau[5], tau[1], tau[3]],
-        [tau[4], tau[3], tau[2]],
-    ])
+    # Stochastic part built from the ASE/Voigt symmetric tensor:
+    # [[xx, xy, xz], [xy, yy, yz], [xz, yz, zz]]
+    tau_3x3 = _ase_voigt_to_symmetric_3x3(tau)
     for r in range(3):
         for c in range(3):
             mu[r, c] += (
@@ -213,6 +207,16 @@ def cpu_pressure_triclinic(rng, target_temperature, target_pressure,
             )
 
     return mu
+
+
+def _ase_voigt_to_symmetric_3x3(values):
+    """Convert ASE Voigt order [xx, yy, zz, yz, xz, xy] to a symmetric 3x3 tensor."""
+    xx, yy, zz, yz, xz, xy = np.asarray(values, dtype=float)
+    return np.array([
+        [xx, xy, xz],
+        [xy, yy, yz],
+        [xz, yz, zz],
+    ])
 
 
 # 默认体积模量 (GPa)，含能材料典型值 10~30 GPa
@@ -264,6 +268,7 @@ class NPT_SCR(MolecularDynamics):
                  tau_p=2000.0,                             # 单位 timestep，与 GPUMD tau_p 一致
                  elastic_modulus=DEFAULT_BULK_MODULUS,      # GPa，默认 15
                  pmode='iso', deform=None, seed=None,
+                 remove_com=True,
                  # --- 渐变参数 ---
                  run_steps=None,           # 总步数，用于计算渐变进度
                  t_start=None,             # 起始温度 (K)，默认为 temperature
@@ -282,6 +287,7 @@ class NPT_SCR(MolecularDynamics):
         self.pmode = pmode.lower() if pmode is not None else None
         self.natoms = len(atoms)
         self.rng = np.random.default_rng(seed)
+        self.remove_com = remove_com
 
         # 温度渐变设置
         self.t_start = t_start if t_start is not None else temperature
@@ -323,6 +329,8 @@ class NPT_SCR(MolecularDynamics):
 
         self._setup_pressure(pressure, tau_p, elastic_modulus)
         self._setup_deform(deform)
+        self._stress_before_thermostat = None
+        self._volume_before_thermostat = None
 
     def _setup_pressure(self, pressure, tau_p, elastic_modulus):
         """
@@ -425,10 +433,12 @@ class NPT_SCR(MolecularDynamics):
             factor = np.sqrt(ke_new / ke)
             self.atoms.set_velocities(velocities * factor)
 
-    def _apply_barostat(self):
+    def _apply_barostat(self, stress=None, volume=None):
         """Apply SCR barostat matching GPUMD compute2()."""
-        stress = self._get_stress_voigt()  # [xx, yy, zz, yz, xz, xy] in eV/Å³
-        volume = self.atoms.get_volume()
+        if stress is None:
+            stress = self._get_stress_voigt()
+        if volume is None:
+            volume = self.atoms.get_volume()
         cell = self.atoms.get_cell().array.copy()
 
         if self.num_p_components == 1:
@@ -495,6 +505,14 @@ class NPT_SCR(MolecularDynamics):
             cell = self.atoms.get_cell().array
             self.atoms.set_cell(cell * scale, scale_atoms=True)
 
+    def _remove_com_velocity(self, velocities, masses):
+        """Remove center-of-mass drift from velocities."""
+        total_mass = masses.sum()
+        if total_mass <= 0:
+            return velocities
+        vcm = (masses * velocities).sum(axis=0) / total_mass
+        return velocities - vcm
+
     def step(self):
         """
         One MD step: velocity Verlet + BDP thermostat + SCR barostat + volume ramp.
@@ -519,18 +537,22 @@ class NPT_SCR(MolecularDynamics):
         forces = atoms.get_forces()
         velocities = atoms.get_velocities()
         velocities += 0.5 * self.dt * forces / masses
-
-        # 移除质心速度
-        total_mass = masses.sum()
-        vcm = (masses * velocities).sum(axis=0) / total_mass
-        velocities -= vcm
+        if self.remove_com:
+            velocities = self._remove_com_velocity(velocities, masses)
 
         atoms.set_velocities(velocities)
+
+        # GPUMD compute2() samples thermo quantities before thermostat/barostat.
+        self._stress_before_thermostat = self._get_stress_voigt()
+        self._volume_before_thermostat = atoms.get_volume()
 
         # compute2: thermostat then barostat
         self._apply_thermostat()
         if self.use_barostat:
-            self._apply_barostat()
+            self._apply_barostat(
+                stress=self._stress_before_thermostat,
+                volume=self._volume_before_thermostat,
+            )
 
         # 体积渐变（在气压计之后）
         self._apply_volume_ramp()
@@ -737,6 +759,7 @@ def create_npt_scr(atoms, timestep=1.0, temperature=300.0, pressure=0.0,
                    tau_t=100.0, tau_p=2000.0,
                    elastic_modulus=DEFAULT_BULK_MODULUS,
                    pmode='iso',
+                   remove_com=True,
                    run_steps=None,
                    t_start=None, t_stop=None, t_schedule=None,
                    p_start=None, p_stop=None, p_schedule=None,
@@ -771,9 +794,9 @@ def create_npt_scr(atoms, timestep=1.0, temperature=300.0, pressure=0.0,
         tau_p=tau_p,
         elastic_modulus=elastic_modulus,
         pmode=pmode,
+        remove_com=remove_com,
         run_steps=run_steps,
         t_start=t_start, t_stop=t_stop, t_schedule=t_schedule,
         p_start=p_start, p_stop=p_stop, p_schedule=p_schedule,
         v_start=v_start, v_stop=v_stop, v_schedule=v_schedule,
         **kwargs)
-

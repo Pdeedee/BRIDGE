@@ -17,7 +17,8 @@ from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.md.nvtberendsen import NVTBerendsen
 from ase.build import make_supercell
 from nepactive.template import (nvt_pytemplate, nphugo_mttk_pytemplate, nphugo_mttk_template,
-                                 shock_test_template, npt_pytemplate, nphugo_scr_pytemplate)
+                                 shock_test_template, npt_pytemplate, nphugo_scr_pytemplate,
+                                 npt_scr_pytemplate)
 from nepactive.plt import ase_plt, gpumdplt
 from nepactive.tools import shock_calculate, run_gpumd_task, run_py_tasks, compute_volume_from_thermo
 from ase.io.extxyz import write_extxyz
@@ -114,6 +115,7 @@ class BaseRun:
         dump_freq = self.sdata.get("dump_freq", 100)
         tau_t = self.sdata.get("tau_t", 100)
         tau_p = self.sdata.get("tau_p", 2000)
+        elastic_modulus = self.sdata.get("elastic_modulus", 15.0)
         pmode = self.sdata.get("pmode", "iso")
         p0 = getattr(self, 'p0', 0)
         temperature_list = self.sdata.get("temperature", [3000])
@@ -142,6 +144,20 @@ class BaseRun:
                     steps=steps,
                     **self._ase_template_kwargs(),
                 )
+            elif ensemble == "npt_scr":
+                py_file = npt_scr_pytemplate.format(
+                    structure=struc_file,
+                    temperature=temperature,
+                    pressure=self.pressure_list[ii],
+                    steps=steps,
+                    dump_freq=dump_freq,
+                    time_step=time_step,
+                    tau_t=tau_t,
+                    tau_p=tau_p,
+                    elastic_modulus=elastic_modulus,
+                    pmode=pmode,
+                    **self._ase_template_kwargs(),
+                )
             elif ensemble in {"nphugo_scr", "nphugo_mttk", "nphugo"}:
                 py_file = nphugo_scr_pytemplate.format(
                     structure=struc_file,
@@ -160,7 +176,7 @@ class BaseRun:
             else:
                 raise ValueError(
                     f"Unsupported ASE init ensemble: {ensemble}. "
-                    "Supported values are nvt, npt, nphugo_scr, nphugo_mttk."
+                    "Supported values are nvt, npt, npt_scr, nphugo_scr, nphugo_mttk."
                 )
             with open("ensemble.py", "w", encoding='utf-8') as f:
                 f.write(py_file)
@@ -177,6 +193,7 @@ class BaseRun:
             "nphugo_scr": "nphugo_scr",
             "nphugo_mttk": "nphugo_mttk",
             "npt": "npt",
+            "npt_scr": "npt_scr",
             "nvt": "nvt",
         }
         for ensemble in ensembles:

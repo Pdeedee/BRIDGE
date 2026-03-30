@@ -71,10 +71,10 @@ sampling:
 
   general:
     # id: "11-24"
-    ensembles: ["npt"]      # 主动学习采样系综，可选: "nphugo_mttk", "nphugo_scr", "nvt", "npt", "msst"
+    ensembles: ["npt"]      # 主动学习采样系综，可选: "nphugo_mttk", "nphugo_scr", "nvt", "npt", "npt_scr", "msst"
     structure_id: [[0,1]]             # 动力学选取的结构文件编号
     pressure: [60,35,10]                    # 模拟的压力列表，单位 GPa
-    pperiod: 2000                           # 模拟的压浴参数设置，单位步数 (仅 nphugo/GPUMD 使用)
+    pperiod: 2000                           # 模拟的压浴参数设置，单位步数 (nphugo / npt_scr 的 GPUMD 路径使用)
     temperature: [3000]                     # 模拟的温度列表，单位 K
 
 init:                          # 初始产物结构生成设置

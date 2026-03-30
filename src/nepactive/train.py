@@ -38,6 +38,7 @@ from nepactive.template import (
     nep_in_template,
     nphugo_mttk_pytemplate,
     nphugo_mttk_template,
+    npt_scr_template,
     npt_template,
     nvt_pytemplate,
     nvt_template,
@@ -1526,15 +1527,19 @@ class Nepactive(object):
             assert all([structure,time_step,run_steps]), "有变量为空"
             # task_dict = {}
             all_dict["pperiod"] = [pperiod]
-            if ensemble in ["nvt", "npt", "nphugo_mttk", "nphugo_scr"]:
+            if ensemble in ["nvt", "npt", "npt_scr", "nphugo_mttk", "nphugo_scr"]:
                 temperature = model_devi.get("temperature") #
-                if ensemble in ["npt", "nvt"]:
+                if ensemble in ["npt", "npt_scr", "nvt"]:
                     assert temperature is not None
                     all_dict["temperature"] = temperature
-                if ensemble in ["npt", "nphugo_mttk", "nphugo_scr"]:
+                if ensemble in ["npt", "npt_scr", "nphugo_mttk", "nphugo_scr"]:
                     pressure = model_devi.get("pressure") #
                     all_dict["pressure"] = pressure
                     assert pressure is not None
+                if ensemble == "npt_scr":
+                    all_dict["tau_t"] = [model_devi.get("tau_t", 100)]
+                    all_dict["tau_p"] = [pperiod]
+                    all_dict["elastic_modulus"] = [model_devi.get("elastic_modulus", 15.0)]
                 if ensemble in ["nphugo_mttk", "nphugo_scr"]:
                     all_dict["e0"] = e0 * mult_power
                     all_dict["p0"] = p0
@@ -1575,6 +1580,8 @@ class Nepactive(object):
                 text = nvt_template.format(time_step = time_step,run_steps = run_steps,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
             elif ensemble == "npt":
                 text = npt_template.format(time_step = time_step,run_steps = run_steps,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
+            elif ensemble == "npt_scr":
+                text = npt_scr_template.format(time_step = time_step, run_steps = run_steps, dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
             elif ensemble in ["nphugo_mttk", "nphugo_scr"]:
                 assert run_steps > 20000
                 text = nphugo_mttk_template.format(

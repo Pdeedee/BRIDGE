@@ -49,6 +49,21 @@ dump_exyz       {dump_freq}
 run			    {run_steps}
 """
 
+npt_scr_template = """
+replicate       {replicate_cell}
+potential		nep.txt
+minimize sd 1.0e-6 10000
+
+time_step	    {time_step}
+velocity		{temperature}
+
+ensemble        npt_scr {temperature} {temperature} {tau_t} {pressure} {elastic_modulus} {tau_p}
+
+dump_thermo		{dump_freq}
+dump_exyz       {dump_freq}
+run			    {run_steps}
+"""
+
 nphugo_mttk_template = """
 replicate       {replicate_cell}
 potential		nep.txt
@@ -218,6 +233,49 @@ dyn = MTTK(atoms,timestep=0.2*units.fs,run_steps=steps,t_stop=temperature_K,p_st
 dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
         volume=True, mode="w"), interval=10)
 dyn.attach(traj.write, interval=10)
+dyn.run(steps)
+
+"""
+
+npt_scr_pytemplate = """
+from ase.io import read, write
+from ase import units
+from nepactive.logger import MDLogger
+from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
+from ase.io.trajectory import Trajectory
+from ase.optimize import LBFGS
+from nepactive.npt_scr import NPT_SCR
+from nepactive.nep_backend import create_ase_calculator
+
+calculator = create_ase_calculator(model_name={ase_model_name}, model_file={ase_model_file}, device="cuda", nep_backend={ase_nep_backend})
+atoms = read("{structure}")
+elements = atoms.get_chemical_symbols()
+sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
+atoms.calc = calculator
+opt = LBFGS(atoms)
+opt.run(fmax=0.05, steps=40)
+steps = {steps}
+write("opt.pdb", atoms)
+temperature_K = {temperature}
+MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K)
+Stationary(atoms)
+ZeroRotation(atoms)
+traj = Trajectory('out.traj', 'w', atoms)
+timestep = {time_step} * units.fs
+pressure = {pressure}
+dyn = NPT_SCR(
+    atoms,
+    timestep=timestep,
+    temperature=temperature_K,
+    pressure=pressure,
+    tau_t={tau_t},
+    tau_p={tau_p},
+    elastic_modulus={elastic_modulus},
+    pmode="{pmode}",
+)
+dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
+        volume=True, mode="w"), interval={dump_freq})
+dyn.attach(traj.write, interval={dump_freq})
 dyn.run(steps)
 
 """
