@@ -131,7 +131,7 @@ pytask_template = """
 cd {work_dir}
 cd {task_dir}
 if [ ! -f task_finished ] ;then 
-rm -f md.log out.traj log
+rm -f md.log out.traj opt.traj log
 python ensemble.py > log 2>&1
 if test $? -eq 0; then touch task_finished;fi
 fi
@@ -176,7 +176,7 @@ atoms = read("{structure}")
 elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
 atoms.calc = calculator
-opt = LBFGS(atoms)
+opt = LBFGS(atoms, trajectory='opt.traj')
 opt.run(fmax=0.05,steps=40)
 steps = {steps}
 write("opt.pdb",atoms)
@@ -216,7 +216,7 @@ atoms = read("{structure}")
 elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
 atoms.calc = calculator
-opt = LBFGS(atoms)
+opt = LBFGS(atoms, trajectory='opt.traj')
 opt.run(fmax=0.05,steps=40)
 steps = {steps}
 write("opt.pdb",atoms)
@@ -252,7 +252,7 @@ atoms = read("{structure}")
 elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
 atoms.calc = calculator
-opt = LBFGS(atoms)
+opt = LBFGS(atoms, trajectory='opt.traj')
 opt.run(fmax=0.05, steps=40)
 steps = {steps}
 write("opt.pdb", atoms)
@@ -332,7 +332,7 @@ elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
 atoms.calc = calculator
 # ucf = UnitCellFilter(atoms,hydrostatic_strain=True)
-opt = LBFGS(atoms)
+opt = LBFGS(atoms, trajectory='opt.traj')
 opt.run(fmax=0.05,steps=40)
 steps = {steps}
 write("opt.pdb",atoms)
@@ -373,7 +373,7 @@ elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
 atoms.calc = calculator
 ucf = UnitCellFilter(atoms,hydrostatic_strain=True)
-opt = LBFGS(ucf)
+opt = LBFGS(ucf, trajectory='opt.traj')
 opt.run(fmax=0.05,steps=40)
 steps = {steps}
 write("opt.pdb",atoms)
@@ -419,7 +419,7 @@ atoms = read("{structure}")
 elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
 atoms.calc = calculator
-opt = LBFGS(atoms)
+opt = LBFGS(atoms, trajectory='opt.traj')
 opt.run(fmax=0.05, steps=40)
 steps = {steps}
 write("opt.pdb", atoms)
@@ -459,7 +459,7 @@ atoms = read("{structure}")
 elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
 atoms.calc = calculator
-opt = LBFGS(atoms)
+opt = LBFGS(atoms, trajectory='opt.traj')
 opt.run(fmax=0.05, steps=40)
 steps = {steps}
 write("opt.pdb", atoms)
@@ -497,7 +497,7 @@ atoms = read("{structure}")
 elements = atoms.get_chemical_symbols()
 sorted_atoms = atoms[[i for i in sorted(range(len(elements)), key=lambda x: elements[x])]]
 atoms.calc = calculator
-opt = LBFGS(atoms)
+opt = LBFGS(atoms, trajectory='opt.traj')
 opt.run(fmax=0.05, steps=40)
 steps = {steps}
 write("opt.pdb", atoms)
