@@ -1416,7 +1416,7 @@ class Nepactive(object):
                     except (ValueError, IndexError):
                         continue
             shock_data = np.array(rows) if rows else np.empty((0, 1))
-            if len(shock_data) > 3:
+            if len(shock_data) >= 3:
                 shock_values = shock_data[-3:, 0]
                 shock_mean = shock_values.mean()
 
@@ -1425,8 +1425,8 @@ class Nepactive(object):
                     dlog.warning(f"Mean shock velocity is zero, skipping error calculation. Values: {shock_values}")
                     return
 
-                Dv_error = np.abs(shock_values.max() - shock_values.min()) / shock_mean * 100
-                dlog.info(f"Shock velocity error is {Dv_error:.2f}%")
+                Dv_error = np.mean(np.abs(shock_values - shock_mean)) / shock_mean * 100
+                dlog.info(f"Shock velocity mean deviation error is {Dv_error:.2f}%")
                 accuracy = self.idata.get("accuracy", 1)
                 if Dv_error < accuracy:
                     dlog.info(f"Reach accuracy {accuracy}%, job finished successfully, will stop training process")

@@ -22,8 +22,6 @@ from nepactive.template import (nvt_pytemplate, nphugo_mttk_pytemplate, nphugo_m
 from nepactive.plt import ase_plt, gpumdplt
 from nepactive.tools import shock_calculate, run_gpumd_task, run_py_tasks, compute_volume_from_thermo
 from ase.io.extxyz import write_extxyz
-from nepactive.tools import get_shortest_distance
-from nepactive.extract import analyze_trajectory
 from nepactive.nep_backend import create_ase_calculator, get_ase_model_config
 
 
@@ -39,6 +37,9 @@ class BaseRun:
         self.atoms._calc = create_ase_calculator(**self._ase_model_config())
         self.work_dir = os.getcwd()
         self.analyze_range = sdata.get("analyze_range", [0.5, 1])
+        sampling_cfg = idata.get("sampling", {}) if isinstance(idata, dict) else {}
+        self.enable_molecule_analysis = sampling_cfg.get("enable_molecule_analysis", False)
+        self.molecule_analysis_backend = sampling_cfg.get("molecule_analysis_backend", "ase")
         self.r_rho = sdata.get("rho", None)
         cell = self.atoms.get_cell()
         cell_complete = self.atoms.get_cell(complete=True)
@@ -455,7 +456,8 @@ class ShockRun(BaseRun):
         thermos = []
         thermo_averages = []
         gpumd_steps = self.sdata.get("steps", 400000)
-        self.total_time = gpumd_steps * 0.2
+        gpumd_time_step = self.sdata.get("time_step", 0.2)
+        self.total_time = gpumd_steps * gpumd_time_step
         for task_dir in task_dirs:
             os.chdir(task_dir)
             dlog.info(f"post process {task_dir}")
@@ -466,33 +468,12 @@ class ShockRun(BaseRun):
             thermos.append(thermo)
             thermo_average = np.average(thermo, axis=0)
             thermo_averages.append(thermo_average)
-            atoms_list = read("dump.xyz", index=":")
-            shortest_distances = []
-            for index, atoms in enumerate(atoms_list):
-                shortest_d = get_shortest_distance(atoms)
-                shortest_distances.append(shortest_d)
-            molecule_data = analyze_trajectory("dump.xyz", index=":")
-            molecule_num = molecule_data.sum(axis=1).to_numpy()
-            frame_count = min(len(shortest_distances), len(molecule_num), len(thermo_new))
-            if frame_count == 0:
-                raise ValueError(f"No frame data found in {task_dir}")
-            if len(shortest_distances) != len(molecule_num) or len(molecule_num) != len(thermo_new):
-                dlog.warning(
-                    "frame count mismatch in %s: shortest_distances=%d, molecule_num=%d, thermo=%d; "
-                    "truncating to %d frames",
-                    task_dir,
-                    len(shortest_distances),
-                    len(molecule_num),
-                    len(thermo_new),
-                    frame_count,
-                )
-            shortest_distances = np.asarray(shortest_distances[:frame_count])
-            molecule_num = molecule_num[:frame_count]
-            molecule_density = molecule_num / thermo_new[:frame_count, 3]
-            molecule_data.to_csv("molecule_data.csv")
-            data = np.column_stack((shortest_distances, molecule_num, molecule_density))
-            np.savetxt('frame_properties.txt', data, fmt='%12.2f')
-            write_extxyz("final.xyz", atoms_list[-1])
+            if os.path.exists("dump.xyz"):
+                try:
+                    atoms = read("dump.xyz", index=-1)
+                    write_extxyz("final.xyz", atoms)
+                except Exception as exc:
+                    dlog.warning(f"failed to write final.xyz from dump.xyz in {task_dir}: {exc}")
 
         os.chdir(self.work_dir)
         fmt = "%12.2f" * 5
@@ -591,6 +572,7 @@ class ShockRun(BaseRun):
         work_dir = os.path.abspath(os.getcwd())
         self.gpumd_pressure_list = self.sdata.get("pressure_list", [20, 25, 30, 35, 40, 45, 50, 60])
         gpumd_steps = self.sdata.get("steps", 400000)
+        gpumd_time_step = self.sdata.get("time_step", 0.2)
         dump_freq = gpumd_steps // 2500
         dlog.info(f"r_v: {self.r_v}, r_rho: {self.r_rho}, rho0: {self.rho0}, v0: {self.volume}")
         real_p0 = self.sdata.get("real_p0", False)
@@ -608,7 +590,7 @@ class ShockRun(BaseRun):
             os.system(f"ln -snf {self.nep} .")
             dlog.info(f"model.xyz and {self.nep} are linked")
             text = shock_test_template.format(
-                time_step=0.2,
+                time_step=gpumd_time_step,
                 run_steps=gpumd_steps,
                 dump_freq=dump_freq,
                 replicate_cell="1 1 1",
