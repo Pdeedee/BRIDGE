@@ -1,4 +1,94 @@
 
+import numpy as np
+
+
+def gpumd_cell_is_triclinic(atoms, atol=1.0e-10):
+    """Return True if the cell has non-zero off-diagonal components in GPUMD's sense."""
+    cell = np.asarray(atoms.get_cell(complete=True), dtype=float)
+    off_diagonal = cell.copy()
+    np.fill_diagonal(off_diagonal, 0.0)
+    return not np.allclose(off_diagonal, 0.0, atol=atol)
+
+
+def _as_float_list(value):
+    if isinstance(value, np.ndarray):
+        return [float(v) for v in value.reshape(-1).tolist()]
+    if isinstance(value, (list, tuple)):
+        return [float(v) for v in value]
+    return None
+
+
+def _fmt_scalar(value):
+    return f"{float(value):g}"
+
+
+def _fmt_values(values):
+    return " ".join(_fmt_scalar(value) for value in values)
+
+
+def build_gpumd_npt_ensemble_line(temperature, pressure, triclinic):
+    mode = "tri" if triclinic else "iso"
+    return (
+        "ensemble        npt_mttk temp "
+        f"{_fmt_scalar(temperature)} {_fmt_scalar(temperature)} "
+        f"{mode} {_fmt_scalar(pressure)} {_fmt_scalar(pressure)} "
+        "tperiod 200 pperiod 5000"
+    )
+
+
+def build_gpumd_npt_scr_ensemble_line(
+    temperature,
+    pressure,
+    tau_t,
+    elastic_modulus,
+    tau_p,
+    triclinic,
+):
+    pressures = _as_float_list(pressure)
+    moduli = _as_float_list(elastic_modulus)
+
+    if pressures is None:
+        pressure_value = float(pressure)
+        pressures = [pressure_value, pressure_value, pressure_value, 0.0, 0.0, 0.0] if triclinic else [pressure_value]
+    elif triclinic and len(pressures) == 3:
+        pressures = [pressures[0], pressures[1], pressures[2], 0.0, 0.0, 0.0]
+
+    if moduli is None:
+        modulus_value = float(elastic_modulus)
+        moduli = [modulus_value] * (6 if triclinic else len(pressures))
+
+    if triclinic:
+        if len(pressures) != 6:
+            raise ValueError("Triclinic GPUMD npt_scr requires 6 pressure components [xx yy zz yz xz xy].")
+        if len(moduli) == 1:
+            moduli = moduli * 6
+        if len(moduli) != 6:
+            raise ValueError("Triclinic GPUMD npt_scr requires 6 elastic modulus components.")
+    else:
+        if len(pressures) not in (1, 3, 6):
+            raise ValueError("Orthogonal GPUMD npt_scr pressure must have 1, 3, or 6 components.")
+        if len(moduli) == 1:
+            moduli = moduli * len(pressures)
+        if len(moduli) != len(pressures):
+            raise ValueError("Elastic modulus component count must match pressure component count for GPUMD npt_scr.")
+
+    return (
+        "ensemble        npt_scr "
+        f"{_fmt_scalar(temperature)} {_fmt_scalar(temperature)} {_fmt_scalar(tau_t)} "
+        f"{_fmt_values(pressures)} {_fmt_values(moduli)} {_fmt_scalar(tau_p)}"
+    )
+
+
+def build_gpumd_nphug_ensemble_line(pressure, e0, p0, v0, pperiod, triclinic):
+    mode = "tri" if triclinic else "iso"
+    return (
+        "ensemble nphug "
+        f"{mode} {_fmt_scalar(pressure)} {_fmt_scalar(pressure)} "
+        f"e0 {_fmt_scalar(e0)} p0 {_fmt_scalar(p0)} v0 {_fmt_scalar(v0)} "
+        f"pperiod {_fmt_scalar(pperiod)}"
+    )
+
+
 msst_template = """
 replicate       {replicate_cell}
 potential		nep.txt
@@ -42,7 +132,7 @@ minimize sd 1.0e-6 10000
 time_step	    {time_step}
 velocity		{temperature}
 
-ensemble        npt_mttk temp {temperature} {temperature} iso {pressure} {pressure} tperiod 200 pperiod 5000
+{ensemble_line}
 
 dump_thermo		{dump_freq}
 dump_exyz       {dump_freq}
@@ -57,7 +147,7 @@ minimize sd 1.0e-6 10000
 time_step	    {time_step}
 velocity		{temperature}
 
-ensemble        npt_scr {temperature} {temperature} {tau_t} {pressure} {elastic_modulus} {tau_p}
+{ensemble_line}
 
 dump_thermo		{dump_freq}
 dump_exyz       {dump_freq}
@@ -79,7 +169,7 @@ run			  20000
 
 dump_thermo		{dump_freq}
 dump_exyz       {dump_freq}
-ensemble nphug iso {pressure} {pressure} e0 {e0} p0 {p0} v0 {v0} pperiod {pperiod}
+{ensemble_line}
 
 run                       {run_steps}
 """
@@ -93,7 +183,7 @@ velocity		1000
 
 dump_thermo		{dump_freq}
 dump_exyz       {dump_freq}
-ensemble nphug iso {pressure} {pressure} e0 {e0} p0 {p0} v0 {v0} pperiod {pperiod}
+{ensemble_line}
 
 run                       {run_steps}
 """

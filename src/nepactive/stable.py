@@ -16,7 +16,8 @@ from nepactive.logger import MDLogger
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution
 from ase.md.nvtberendsen import NVTBerendsen
 from ase.build import make_supercell
-from nepactive.template import (nvt_pytemplate, nphugo_mttk_pytemplate, nphugo_mttk_template,
+from nepactive.template import (build_gpumd_nphug_ensemble_line, gpumd_cell_is_triclinic,
+                                 nvt_pytemplate, nphugo_mttk_pytemplate, nphugo_mttk_template,
                                  shock_test_template, npt_pytemplate, nphugo_scr_pytemplate,
                                  npt_scr_pytemplate)
 from nepactive.plt import ase_plt, gpumdplt
@@ -589,6 +590,7 @@ class ShockRun(BaseRun):
             write_extxyz("model.xyz", atoms)
             os.system(f"ln -snf {self.nep} .")
             dlog.info(f"model.xyz and {self.nep} are linked")
+            triclinic = gpumd_cell_is_triclinic(atoms)
             text = shock_test_template.format(
                 time_step=gpumd_time_step,
                 run_steps=gpumd_steps,
@@ -598,7 +600,15 @@ class ShockRun(BaseRun):
                 e0=self.energy,
                 v0=self.r_v,
                 p0=self.p0,
-                pperiod=2000
+                pperiod=2000,
+                ensemble_line=build_gpumd_nphug_ensemble_line(
+                    pressure=self.gpumd_pressure_list[jj],
+                    e0=self.energy,
+                    p0=self.p0,
+                    v0=self.r_v,
+                    pperiod=2000,
+                    triclinic=triclinic,
+                ),
             )
             with open("run.in", "w", encoding='utf-8') as f:
                 f.write(text)

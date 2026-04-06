@@ -32,6 +32,10 @@ from nepactive.nep_backend import create_ase_calculator, get_ase_model_config, r
 from nepactive.sampling import select_structure_indices, select_structure_indices_with_info, split_train_test_structures
 from nepactive.stable import InitRun, ShockRun
 from nepactive.template import (
+    build_gpumd_nphug_ensemble_line,
+    build_gpumd_npt_ensemble_line,
+    build_gpumd_npt_scr_ensemble_line,
+    gpumd_cell_is_triclinic,
     continue_pytemplate,
     model_devi_template,
     msst_template,
@@ -1685,39 +1689,75 @@ class Nepactive(object):
 
         index = 0
         for ensemble,task in task_dicts:
+            task_dir = f"{work_dir}/task.{index:06d}"
+            file = f"{task_dir}/run.in"
+            os.makedirs(task_dir,exist_ok=True)
+            os.chdir(task_dir)
+
+            structure = task["structure"]
+            atom = read(structure)
+            if not structure.endswith("xyz"):
+                write("POSCAR", atom)
+                atom = read("POSCAR")
+                write_extxyz("model.xyz", atom)
+            else:
+                shutil.copy(structure, "model.xyz")
+            triclinic = gpumd_cell_is_triclinic(atom)
+
             if ensemble == "msst":
                 assert run_steps > 20000
                 text = msst_template.format(time_step = time_step,run_steps = run_steps-20000,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
             elif ensemble == "nvt":
                 text = nvt_template.format(time_step = time_step,run_steps = run_steps,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
             elif ensemble == "npt":
-                text = npt_template.format(time_step = time_step,run_steps = run_steps,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
+                text = npt_template.format(
+                    time_step=time_step,
+                    run_steps=run_steps,
+                    dump_freq=dump_freq,
+                    replicate_cell=replicate_cell,
+                    ensemble_line=build_gpumd_npt_ensemble_line(
+                        temperature=task["temperature"],
+                        pressure=task["pressure"],
+                        triclinic=triclinic,
+                    ),
+                    **task,
+                )
             elif ensemble == "npt_scr":
-                text = npt_scr_template.format(time_step = time_step, run_steps = run_steps, dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
+                text = npt_scr_template.format(
+                    time_step=time_step,
+                    run_steps=run_steps,
+                    dump_freq=dump_freq,
+                    replicate_cell=replicate_cell,
+                    ensemble_line=build_gpumd_npt_scr_ensemble_line(
+                        temperature=task["temperature"],
+                        pressure=task["pressure"],
+                        tau_t=task["tau_t"],
+                        elastic_modulus=task["elastic_modulus"],
+                        tau_p=task["tau_p"],
+                        triclinic=triclinic,
+                    ),
+                    **task,
+                )
             elif ensemble in ["nphugo_mttk", "nphugo_scr"]:
                 assert run_steps > 20000
                 text = nphugo_mttk_template.format(
-                    time_step = time_step,
-                    run_steps = run_steps-20000,
-                    dump_freq = dump_freq,
-                    replicate_cell = replicate_cell,
-                    **task
+                    time_step=time_step,
+                    run_steps=run_steps-20000,
+                    dump_freq=dump_freq,
+                    replicate_cell=replicate_cell,
+                    ensemble_line=build_gpumd_nphug_ensemble_line(
+                        pressure=task["pressure"],
+                        e0=task["e0"],
+                        p0=task["p0"],
+                        v0=task["v0"],
+                        pperiod=task["pperiod"],
+                        triclinic=triclinic,
+                    ),
+                    **task,
                 )
                 # dlog.info(f"nphugo task:{task},npugo text:{text}")
             else:
                 raise NotImplementedError(f"The ensemble {ensemble} is not supported")
-            task_dir = f"{work_dir}/task.{index:06d}"
-            file = f"{task_dir}/run.in"
-            os.makedirs(task_dir,exist_ok=True)
-            os.chdir(task_dir)
-            structure:str = task["structure"]
-            if not structure.endswith("xyz"):
-                atom = read(structure)
-                atom = write("POSCAR",atom)
-                atom = read("POSCAR")
-                write_extxyz(f"model.xyz",atom)####################
-            else:
-                shutil.copy(structure,f"model.xyz")
             with open(file,mode='w') as f:
                 f.write(text)
             if not os.path.isfile("nep.txt"):

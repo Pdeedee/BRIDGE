@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 import re
 import copy
 from nepactive.stable import InitRun, ShockRun
-from nepactive.template import npt_template,nphugo_mttk_template,nvt_template,msst_template,model_devi_template,nep_in_template,nphugo_mttk_pytemplate,nvt_pytemplate,continue_pytemplate
+from nepactive.template import build_gpumd_nphug_ensemble_line, gpumd_cell_is_triclinic, npt_template,nphugo_mttk_template,nvt_template,msst_template,model_devi_template,nep_in_template,nphugo_mttk_pytemplate,nvt_pytemplate,continue_pytemplate
 from nepactive.plt import gpumdplt,nep_plt,ase_plt
 from nepactive import parse_yaml
 from nepactive.force import force_main
@@ -853,15 +853,6 @@ class Nepactive_OB(Nepactive):
                 dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
                 p0 = 0
                 
-            text = nphugo_mttk_template.format(
-                time_step=time_step,
-                run_steps=run_steps-20000,
-                dump_freq=dump_freq,
-                replicate_cell=replicate_cell,
-                e0=e0, p0=p0, v0=r_v,
-                **task
-            )
-
             # 设置任务环境
             os.chdir(task_dir)
             structure = task["structure"]
@@ -872,6 +863,24 @@ class Nepactive_OB(Nepactive):
                 
             atoms = read(structure)
             write_extxyz("model.xyz", atoms)
+            triclinic = gpumd_cell_is_triclinic(atoms)
+
+            text = nphugo_mttk_template.format(
+                time_step=time_step,
+                run_steps=run_steps-20000,
+                dump_freq=dump_freq,
+                replicate_cell=replicate_cell,
+                e0=e0, p0=p0, v0=r_v,
+                ensemble_line=build_gpumd_nphug_ensemble_line(
+                    pressure=task["pressure"],
+                    e0=e0,
+                    p0=p0,
+                    v0=r_v,
+                    pperiod=task["pperiod"],
+                    triclinic=triclinic,
+                ),
+                **task
+            )
             
             # 写入输入文件
             with open("run.in", 'w') as f:
