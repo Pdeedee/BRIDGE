@@ -9,6 +9,7 @@ from ase import Atoms
 from ase.io import read, write
 
 from nepactive import dlog
+from nepactive.native_guard import get_structures_descriptor_with_gpu_guard
 from nepactive.nep_backend import NativeNepCalculator
 
 
@@ -330,8 +331,16 @@ def compute_structure_descriptors(
                 "dataset_sampling_nep_file is required when dataset_sampling_descriptor=nep"
             )
         try:
-            calculator = NativeNepCalculator(resolved_model, backend=nep_backend)
-            descriptors = calculator.get_structures_descriptor(atoms_list)
+            if str(nep_backend or "auto").lower() in {"auto", "native", "gpu"}:
+                descriptors, backend_used = get_structures_descriptor_with_gpu_guard(
+                    atoms_list,
+                    resolved_model,
+                    backend=nep_backend,
+                )
+                dlog.info("Computed NEP descriptors with %s backend", backend_used)
+            else:
+                calculator = NativeNepCalculator(resolved_model, backend=nep_backend)
+                descriptors = calculator.get_structures_descriptor(atoms_list)
             if descriptors.size == 0:
                 raise RuntimeError(f"Failed to compute NEP descriptors from {resolved_model}")
             return np.asarray(descriptors, dtype=np.float32), "nep"
