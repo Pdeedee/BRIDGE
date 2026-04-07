@@ -23,8 +23,18 @@ def _normalize_argv(argv: list[str]) -> list[str]:
         "output": "--output",
     }
     normalized: list[str] = []
-    for token in argv:
-        normalized.append(token_map.get(token, token))
+    ii = 0
+    while ii < len(argv):
+        token = token_map.get(argv[ii], argv[ii])
+        normalized.append(token)
+        if token == "--duplicate" and ii + 1 < len(argv):
+            next_token = argv[ii + 1].strip().strip("()[]")
+            duplicate_parts = next_token.replace(",", " ").split()
+            if len(duplicate_parts) == 3:
+                normalized.extend(duplicate_parts)
+                ii += 2
+                continue
+        ii += 1
     return normalized
 
 
@@ -32,14 +42,7 @@ def _parse_duplicate(values: Iterable[str] | None) -> tuple[int, int, int] | Non
     if not values:
         return None
 
-    tokens: list[str] = []
-    for value in values:
-        cleaned = value.strip().strip("()[]")
-        if not cleaned:
-            continue
-        parts = cleaned.replace(",", " ").split()
-        tokens.extend(parts)
-
+    tokens = [value.strip() for value in values if value.strip()]
     if len(tokens) != 3:
         raise ValueError("duplicate must provide exactly three integers, e.g. 2,2,2")
 
@@ -89,6 +92,8 @@ def convert_structure(
         if len(converted) != 1:
             raise ValueError("VASP output supports only a single frame. Use --index to select one frame.")
         write(output_path, converted[0], format="vasp")
+    elif output_format == "xyz":
+        write(output_path, converted, format="extxyz")
     else:
         write(output_path, converted, format=output_format)
     return output_path
@@ -107,7 +112,7 @@ def cli(argv: list[str] | None = None) -> str:
     )
     parser.add_argument(
         "--duplicate",
-        nargs="+",
+        nargs=3,
         default=None,
         help="Cell repetition, e.g. '2 2 2' or '2,2,2'",
     )
@@ -118,7 +123,8 @@ def cli(argv: list[str] | None = None) -> str:
     )
 
     normalized_argv = _normalize_argv(list(argv) if argv is not None else [])
-    args = parser.parse_args(normalized_argv or None)
+    parse_method = getattr(parser, "parse_intermixed_args", parser.parse_args)
+    args = parse_method(normalized_argv or None)
     duplicate = _parse_duplicate(args.duplicate)
     output_path = convert_structure(
         structure=args.structure,
