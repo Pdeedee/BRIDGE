@@ -22,7 +22,7 @@ from nepactive.template import build_gpumd_nphug_ensemble_line, gpumd_cell_is_tr
 from nepactive.plt import ase_plt,gpumdplt
 from nepactive.tools import shock_calculate,run_gpumd_task,compute_volume_from_thermo
 from ase.io.extxyz import write_extxyz
-from nepactive.stable import StableRun
+from nepactive.stable import StableRun, _augment_with_single_atoms, _ensure_packmol_templates
 
 class StableRun_OB(StableRun):
     def __init__(self, idata:dict):
@@ -189,7 +189,7 @@ class StableRun_OB(StableRun):
             source_file = os.path.join(parent_dir, 'molecules')
 
             if not os.path.isfile("POSCAR"):
-                os.system(f"cp {source_file}/*pdb .")
+                _ensure_packmol_templates(molecule_dict, source_file)
                 self.make_structure(molecule_dict,name="POSCAR")
                 dlog.info(f"make structure for {molecule_dict}")
 
@@ -281,7 +281,7 @@ class StableRun_OB(StableRun):
         while result["error"] != 0 and max_try < 10:
             result = solve_molecular_distribution(c,h,o,n)
             max_try += 1
-        molecules_dict = result["solution"]
+        molecules_dict = _augment_with_single_atoms(element_counts, result["solution"])
         dlog.info(f"molecule_dict: {molecules_dict},error: {result['error']}")
         return molecules_dict,result["error"]
 

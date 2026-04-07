@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 from ase import Atoms, units
 import numpy as np
 import os
+import shutil
 from collections import Counter
 from nepactive.packmol import make_structure
 from glob import glob
@@ -25,6 +26,58 @@ from nepactive.tools import shock_calculate, run_gpumd_task, run_py_tasks, compu
 from ase.io.extxyz import write_extxyz
 from nepactive.nep_backend import create_ase_calculator, get_ase_model_config
 
+SUPPORTED_MOLECULAR_ELEMENTS = ("C", "H", "O", "N")
+MOLECULAR_LIBRARY_STOICH = {
+    "C2H2": {"C": 2, "H": 2},
+    "CH4": {"C": 1, "H": 4},
+    "CO": {"C": 1, "O": 1},
+    "CO2": {"C": 1, "O": 2},
+    "H2": {"H": 2},
+    "H2O": {"H": 2, "O": 1},
+    "N2": {"N": 2},
+    "NH3": {"N": 1, "H": 3},
+    "O2": {"O": 2},
+}
+
+
+def _write_single_atom_pdb(symbol: str, path: str) -> None:
+    atom = Atoms(symbols=[symbol], positions=[[0.0, 0.0, 0.0]])
+    write(path, atom)
+
+
+def _ensure_packmol_templates(molecule_dict: dict, source_dir: str) -> None:
+    for entry in os.listdir(source_dir):
+        if entry.endswith(".pdb"):
+            src = os.path.join(source_dir, entry)
+            dst = os.path.join(os.getcwd(), entry)
+            if not os.path.exists(dst):
+                shutil.copy2(src, dst)
+
+    for species in molecule_dict:
+        pdb_path = f"{species}.pdb"
+        if os.path.exists(pdb_path):
+            continue
+        if re.fullmatch(r"[A-Z][a-z]?", species):
+            _write_single_atom_pdb(species, pdb_path)
+            dlog.info(f"Generated single-atom template {pdb_path} for packmol")
+            continue
+        raise FileNotFoundError(f"Missing molecular template for {species}: {pdb_path}")
+
+
+def _augment_with_single_atoms(element_counts: Counter, molecules_dict: dict) -> dict:
+    remaining = Counter(element_counts)
+    for name, count in molecules_dict.items():
+        stoich = MOLECULAR_LIBRARY_STOICH.get(name, {})
+        for symbol, stoich_count in stoich.items():
+            remaining[symbol] -= stoich_count * count
+
+    augmented = {name: int(count) for name, count in molecules_dict.items() if int(count) > 0}
+
+    for symbol, count in remaining.items():
+        if count > 0:
+            augmented[symbol] = augmented.get(symbol, 0) + int(count)
+
+    return augmented
 
 # ---------------------------------------------------------------------------
 #  BaseRun — 共享逻辑
@@ -340,7 +393,7 @@ class InitRun(BaseRun):
             parent_dir = os.path.dirname(os.path.dirname(current_dir))
             source_file = os.path.join(parent_dir, 'molecules')
             if not os.path.isfile("stable.pdb"):
-                os.system(f"cp {source_file}/*pdb .")
+                _ensure_packmol_templates(molecule_dict, source_file)
                 self.make_structure(molecule_dict, name="stable.pdb")
                 dlog.info(f"make structure for {molecule_dict}")
             if not os.path.isfile("POSCAR"):
@@ -370,7 +423,7 @@ class InitRun(BaseRun):
         while result["error"] != 0 and max_try < 10:
             result = solve_molecular_distribution(c, h, o, n)
             max_try += 1
-        molecules_dict = result["solution"]
+        molecules_dict = _augment_with_single_atoms(element_counts, result["solution"])
         dlog.info(f"molecule_dict: {molecules_dict}, error: {result['error']}")
         return molecules_dict, result["error"]
 
