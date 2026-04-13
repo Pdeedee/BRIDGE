@@ -167,6 +167,100 @@ class Nepactive(object):
                     return stripped
         return None
 
+    @staticmethod
+    def _listify(value):
+        if value in (None, "", [], {}):
+            return []
+        if isinstance(value, (list, tuple, np.ndarray)):
+            return list(value)
+        return [value]
+
+    @classmethod
+    def _flatten_structure_indices(cls, value) -> list[int]:
+        flattened: list[int] = []
+        for item in cls._listify(value):
+            if isinstance(item, (list, tuple, np.ndarray)):
+                for sub_item in cls._listify(item):
+                    flattened.append(int(sub_item))
+            else:
+                flattened.append(int(item))
+        seen = set()
+        ordered: list[int] = []
+        for index in flattened:
+            if index not in seen:
+                ordered.append(index)
+                seen.add(index)
+        return ordered
+
+    @classmethod
+    def _parse_init_structure_id(cls, value) -> list[int]:
+        groups = cls._listify(value)
+        if not groups:
+            return []
+        if any(not isinstance(group, (list, tuple, np.ndarray)) for group in groups):
+            raise TypeError(
+                "init.structure_id must use nested-list syntax like [[0,1]] rather than [0,1]."
+            )
+        return cls._flatten_structure_indices(groups)
+
+    def _resolve_init_config(self, data: Optional[dict] = None) -> dict:
+        config = self.idata if data is None else data
+        init_cfg = copy.deepcopy(config.get("init", {}) or {})
+        sampling = config.get("sampling", {})
+        general = sampling.get("general", {}) if isinstance(sampling, dict) else {}
+        for key in ("ensembles", "temperature", "pressure", "time_step", "tau_t", "tau_p", "pperiod", "elastic_modulus", "pmode", "structure_id"):
+            value = init_cfg.get(key)
+            if value in (None, "", [], {}):
+                fallback = general.get(key)
+                if fallback not in (None, "", [], {}):
+                    init_cfg[key] = copy.deepcopy(fallback)
+        return init_cfg
+
+    @staticmethod
+    def _normalize_raw_structure_files(data: dict) -> list[str]:
+        structure_files = list(data.get("structure_files", ["POSCAR"]) or ["POSCAR"])
+        generated_path = "init/struc.000/structure/POSCAR"
+        normalized: list[str] = []
+        for struct_file in structure_files:
+            if struct_file == generated_path:
+                continue
+            normalized.append(struct_file)
+        return normalized or ["POSCAR"]
+
+    def _resolve_effective_structure_files(self, data: Optional[dict] = None, include_generated: bool = False) -> list[str]:
+        config = self.idata if data is None else data
+        structure_files = self._normalize_raw_structure_files(config)
+        generated_path = "init/struc.000/structure/POSCAR"
+        if include_generated and generated_path not in structure_files:
+            insert_at = 1 if structure_files else 0
+            structure_files.insert(insert_at, generated_path)
+        return structure_files
+
+    def _resolve_init_structure_indices(self, data: Optional[dict] = None, effective_structure_files: Optional[list[str]] = None) -> list[int]:
+        config = self.idata if data is None else data
+        structure_files = effective_structure_files or config.get("structure_files", ["POSCAR"])
+        init_cfg = self._resolve_init_config(config)
+        selection = init_cfg.get("structure_id")
+        if selection in (None, "", [], {}):
+            return list(range(len(structure_files)))
+        indices = self._parse_init_structure_id(selection)
+        valid = [index for index in indices if 0 <= index < len(structure_files)]
+        return valid or list(range(len(structure_files)))
+
+    def _resolve_init_dataset_files(self, kind: str, data: Optional[dict] = None) -> list[str]:
+        if kind not in {"train", "test"}:
+            raise ValueError(f"Unsupported init dataset kind: {kind}")
+        config = self.idata if data is None else data
+        init_cfg = self._resolve_init_config(config)
+        custom_files = self._listify(init_cfg.get(f"{kind}_data"))
+        resolved: list[str] = []
+        for file_path in custom_files:
+            path = str(file_path)
+            if not os.path.isabs(path):
+                path = os.path.join(self.work_dir, path)
+            resolved.append(path)
+        return resolved
+
     def _resolve_nep_in_header(self, task_index: int, pot_inherit: bool) -> str:
         current_header = self.infer_nep_in_header(self.idata, work_dir=self.work_dir)
         explicit_header = self.idata.get("nep_in_header")
@@ -368,6 +462,8 @@ class Nepactive(object):
                     os.path.join(self.work_dir, "init", "iter_test.xyz"),
                 ]
             )
+            reference_files.extend(self._resolve_init_dataset_files("train"))
+            reference_files.extend(self._resolve_init_dataset_files("test"))
         if start_iter is None or end_iter is None:
             return reference_files
         for iii in range(max(start_iter, 0), end_iter + 1):
@@ -683,17 +779,18 @@ class Nepactive(object):
         self.gpu_available = self.idata.get("gpu_available")
         self.shock_run= self.idata.get("shock_run", True)
         self.structure_prefix = self.idata.get("structure_prefix", self.work_dir)
+        self.user_structure_files = self._normalize_raw_structure_files(self.idata)
         if self.shock_run:
             self.check_inistruc()
             sampling_cfg = self._sampling_general_config(self.idata)
             if os.path.exists(f"{self.work_dir}/nostrucnum"):
                 self.idata.setdefault("init", {})["struc_num"] = 0
-                self.idata["structure_files"] = self.idata.get("structure_files",["POSCAR"])
+                self.idata["structure_files"] = self._resolve_effective_structure_files(self.idata, include_generated=False)
                 sampling_cfg["structure_id"] = sampling_cfg.get("structure_id", [[0]])
             else:
                 self.idata.setdefault("init", {})["struc_num"] = 1
-                self.idata["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
-                sampling_cfg["structure_id"] = [[0, 1]]
+                self.idata["structure_files"] = self._resolve_effective_structure_files(self.idata, include_generated=True)
+                sampling_cfg["structure_id"] = sampling_cfg.get("structure_id", [[0, 1]])
         else:
             self.idata.setdefault("init", {})["struc_num"] = 0
         # dlog.info(f"self.idata:{self.idata}")
@@ -818,38 +915,39 @@ class Nepactive(object):
             init_data["rho"] = rho
         init_run = InitRun(self.idata, init_data)
         init_run.calculate_properties()
+        selected_structure_indices: list[int] = []
         if self.shock_run:
             if not os.path.exists(f"{self.work_dir}/nostrucnum"):
                 sampling_cfg = self._sampling_general_config(self.idata)
-                self.idata["structure_files"]=["POSCAR","init/struc.000/structure/POSCAR"]
+                self.idata["structure_files"] = self._resolve_effective_structure_files(self.idata, include_generated=True)
                 sampling_cfg["structure_id"] = sampling_cfg.get("structure_id", [[0, 1], [0, 1]])
-                sampling_cfg["temperature"] = sampling_cfg.get("temperature", [3000])
-                sampling_cfg["ensembles"] = sampling_cfg.get("ensembles", ["nphugo_scr", "nvt"])
+                selected_structure_indices = self._resolve_init_structure_indices(self.idata, self.idata["structure_files"])
                 try:
-                    for ii in range(init_run.struc_num):
-                        os.chdir(work_dir)
-                        os.makedirs(f"struc.{ii:03d}",exist_ok=True)
-                        struc_dir = os.path.abspath(f"struc.{ii:03d}")
-                        # struc_dirs.append(struc_dir)
-                        os.chdir(struc_dir)
-                        init_run.make_preparations()
+                    if 1 in selected_structure_indices:
+                        for ii in range(init_run.struc_num):
+                            os.chdir(work_dir)
+                            os.makedirs(f"struc.{ii:03d}",exist_ok=True)
+                            struc_dir = os.path.abspath(f"struc.{ii:03d}")
+                            os.chdir(struc_dir)
+                            init_run.make_preparations()
                 except ValueError as e:
                     dlog.warning(f"Error in make preparations: {e}")
                     os.system(f"touch {self.work_dir}/nostrucnum")
                     if self.shock_run:
                         sampling_cfg = self._sampling_general_config(self.idata)
                         self.idata.setdefault("init", {})["struc_num"] = 0
-                        self.idata["structure_files"] = self.idata.get("structure_files",["POSCAR"])
+                        self.idata["structure_files"] = self._resolve_effective_structure_files(self.idata, include_generated=False)
                         sampling_cfg["structure_id"] = sampling_cfg.get("structure_id", [[0], [0]])
-                        sampling_cfg["ensembles"] = sampling_cfg.get("ensembles", ["nphugo_scr", "nvt"])
-                        sampling_cfg["temperature"] = sampling_cfg.get("temperature", [3000])
+                        selected_structure_indices = self._resolve_init_structure_indices(self.idata, self.idata["structure_files"])
                         dlog.warning("Exception occurred, set struc_num to 0 and continue")
 
         # 处理用户在 in.yaml 中额外提供的结构文件（跳过自动生成的 init/struc.000/structure/POSCAR）
         structure_files = self.idata.get("structure_files", ["POSCAR"])
+        if not selected_structure_indices:
+            selected_structure_indices = self._resolve_init_structure_indices(self.idata, structure_files)
         for ii, struct_file in enumerate(structure_files):
             # 跳过 POSCAR 和自动生成的 init/struc.*/structure/POSCAR
-            if ii == 0 or struct_file.startswith("init/struc."):
+            if ii not in selected_structure_indices or ii == 0 or struct_file.startswith("init/struc."):
                 continue
             os.chdir(work_dir)
             os.makedirs(f"struc.{ii:03d}",exist_ok=True)
@@ -865,7 +963,7 @@ class Nepactive(object):
             write("structure/stable.pdb", sorted_atoms)
             init_run.make_preparations()
 
-        if True:
+        if 0 in selected_structure_indices:
             os.chdir(work_dir)
             os.makedirs("original",exist_ok=True)
             struc_dir = os.path.abspath("original")
@@ -998,14 +1096,14 @@ class Nepactive(object):
             current_sampling_cfg = self._sampling_general_config(self.idata)
             if os.path.exists(f"{os.path.dirname(file)}/nostrucnum"):
                 data.setdefault("init", {})["struc_num"] = 0
-                data["structure_files"] = self.idata.get("structure_files",["POSCAR"])
+                data["structure_files"] = self._resolve_effective_structure_files(data, include_generated=False)
                 sampling_cfg["structure_id"] = current_sampling_cfg.get("structure_id", [[0]])
                 sampling_cfg["ensembles"] = current_sampling_cfg.get("ensembles", sampling_cfg.get("ensembles", ["nphugo_scr", "nvt"]))
                 sampling_cfg["temperature"] = current_sampling_cfg.get("temperature", sampling_cfg.get("temperature", [3000]))
                 sampling_cfg["structure_id"] = [[0],[0]]
             else:
                 data.setdefault("init", {})["struc_num"] = 1
-                data["structure_files"] = ["POSCAR","init/struc.000/structure/POSCAR"]
+                data["structure_files"] = self._resolve_effective_structure_files(data, include_generated=True)
                 sampling_cfg["ensembles"] = current_sampling_cfg.get("ensembles", sampling_cfg.get("ensembles", ["nphugo_scr", "nvt"]))
                 sampling_cfg["temperature"] = current_sampling_cfg.get("temperature", sampling_cfg.get("temperature", [3000]))
                 sampling_cfg["structure_id"] = [[0,1],[0,1]]
@@ -1251,7 +1349,7 @@ class Nepactive(object):
                 if not os.path.isfile("test.xyz"):
                     os.symlink("../dataset/test.xyz", "test.xyz")
                 if self.ii == 0:
-                    ini_train_steps = self.idata.get("ini_train_steps", 10000)
+                    ini_train_steps = self.idata.get("ini_train_steps", 20000)
                     nep_in = self._build_nep_in_content(
                         jj,
                         pot_inherit=pot_inherit,
@@ -1485,6 +1583,9 @@ class Nepactive(object):
         #make training data preparation
         os.makedirs("dataset", exist_ok=True)
         def merge_files(input_files, output_file):
+            if not input_files:
+                open(output_file, "wb").close()
+                return
             command = ['cat'] + input_files  # 适用于类Unix系统
             with open(output_file, 'wb') as outfile:
                 subprocess.run(command, stdout=outfile)
@@ -1496,6 +1597,8 @@ class Nepactive(object):
             # 直接调用 extend 方法，不要尝试将其结果赋值
             files.extend(glob(os.path.join(global_work_dir, "init/iter_train.xyz")))
             testfiles.extend(glob(os.path.join(global_work_dir, "init/iter_test.xyz")))
+            files.extend(path for path in self._resolve_init_dataset_files("train") if os.path.exists(path))
+            testfiles.extend(path for path in self._resolve_init_dataset_files("test") if os.path.exists(path))
 
             # 检查文件列表是否为空
             # if not files:
@@ -1558,7 +1661,7 @@ class Nepactive(object):
         structure_files:list = self.idata.get("structure_files")
         structure_prefix = self.idata.get("structure_prefix",self.work_dir)
         sampling_cfg = self._sampling_config(self.idata)
-        time_step_general = sampling_cfg.get("time_step", None)
+        time_step_general = sampling_cfg.get("time_step", self.idata.get("time_step", 0.2))
         structure_files = [os.path.join(structure_prefix,structure_file) for structure_file in structure_files]
         nep_file = self.idata.get("nep_file","../../00.nep/task.000000/nep.txt")
         needed_frames = sampling_cfg.get("needed_frames",10000)
@@ -1631,16 +1734,29 @@ class Nepactive(object):
 
             structure_id = model_devi.get("structure_id",[[0]])[ensemble_index]
             all_dict = {}
-            assert structure_files is not None
-            structure = [structure_files[ii] for ii in structure_id] #####################################################
+            if structure_files is None:
+                raise ValueError("structure_files is None when building GPUMD sampling tasks")
+            try:
+                structure = [structure_files[ii] for ii in structure_id]
+            except IndexError as exc:
+                raise IndexError(
+                    f"sampling.general.structure_id[{ensemble_index}]={structure_id} exceeds available "
+                    f"structure_files indices 0..{len(structure_files)-1}"
+                ) from exc
             all_dict["structure"] = structure
-            time_step = model_devi.get("time_step")
-            # print("ensembles =", ensembles)
-            # print("structure_id raw =", model_devi.get("structure_id", [[0]]))
-            if not time_step:
-                time_step = time_step_general
+            time_step_values = cls._listify(model_devi.get("time_step"))
+            if not time_step_values:
+                time_step_values = cls._listify(time_step_general)
+            if not time_step_values:
+                time_step_values = [0.2]
+            all_dict["time_step"] = [float(value) for value in time_step_values]
 
-            assert all([structure,time_step,run_steps]), "有变量为空"
+            if not structure:
+                raise ValueError(
+                    f"sampling.general.structure_id[{ensemble_index}] resolved to an empty structure list"
+                )
+            if not run_steps:
+                raise ValueError("run_steps is empty when building GPUMD sampling tasks")
             # task_dict = {}
             all_dict["pperiod"] = [pperiod]
             if ensemble in ["nvt", "npt", "npt_scr", "nphugo_mttk", "nphugo_scr"]:
@@ -1703,15 +1819,15 @@ class Nepactive(object):
             else:
                 shutil.copy(structure, "model.xyz")
             triclinic = gpumd_cell_is_triclinic(atom)
+            task_time_step = float(task["time_step"])
 
             if ensemble == "msst":
                 assert run_steps > 20000
-                text = msst_template.format(time_step = time_step,run_steps = run_steps-20000,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
+                text = msst_template.format(run_steps = run_steps-20000,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
             elif ensemble == "nvt":
-                text = nvt_template.format(time_step = time_step,run_steps = run_steps,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
+                text = nvt_template.format(run_steps = run_steps,dump_freq = dump_freq, replicate_cell = replicate_cell, **task)
             elif ensemble == "npt":
                 text = npt_template.format(
-                    time_step=time_step,
                     run_steps=run_steps,
                     dump_freq=dump_freq,
                     replicate_cell=replicate_cell,
@@ -1724,7 +1840,6 @@ class Nepactive(object):
                 )
             elif ensemble == "npt_scr":
                 text = npt_scr_template.format(
-                    time_step=time_step,
                     run_steps=run_steps,
                     dump_freq=dump_freq,
                     replicate_cell=replicate_cell,
@@ -1741,7 +1856,6 @@ class Nepactive(object):
             elif ensemble in ["nphugo_mttk", "nphugo_scr"]:
                 assert run_steps > 20000
                 text = nphugo_mttk_template.format(
-                    time_step=time_step,
                     run_steps=run_steps-20000,
                     dump_freq=dump_freq,
                     replicate_cell=replicate_cell,
@@ -1763,7 +1877,7 @@ class Nepactive(object):
             if not os.path.isfile("nep.txt"):
                 os.symlink(nep_file, "nep.txt")
             index += 1
-        total_time = run_steps*time_step
+        total_time = run_steps * max(float(task["time_step"]) for _, task in task_dicts)
 
         # dlog.info("generate gpumd task done")
         return total_time, model_devi_task_numbers
@@ -1839,6 +1953,9 @@ class Nepactive(object):
         
         # 批量输出处理
         self._batch_output_processing(results, config)
+
+        # 当采样已经没有新结构可选时，按正常收敛终止，而不是继续在后续打标/训练阶段报错
+        self._handle_empty_candidate_completion(results, config)
         
         # 更新步数和状态
         self._finalize_iteration(config)
@@ -2107,6 +2224,46 @@ class Nepactive(object):
             candidate_ratio = stats['candidate'] / stats['total']
             failed_ratio = 1 - accurate_ratio - candidate_ratio
             dlog.info(f"Ratios - failed: {failed_ratio:.4f}, candidate: {candidate_ratio:.4f}, accurate: {accurate_ratio:.4f}")
+
+    def _handle_empty_candidate_completion(self, results, config):
+        """在没有新候选结构时，视为正常收敛终止。"""
+        final_candidate_count = int(results.get("final_candidate_count", 0) or 0)
+        if final_candidate_count > 0:
+            return
+
+        stats = results.get("statistics", {})
+        provisional_candidate_count = int(stats.get("candidate", 0) or 0)
+        total_frames = int(stats.get("total", 0) or 0)
+
+        if provisional_candidate_count == 0:
+            reason = (
+                "No candidate structures satisfy the current sampling criteria"
+            )
+        else:
+            reason = (
+                "All provisional candidate structures were removed by failed-frame trimming "
+                "or shortest-distance filtering"
+            )
+
+        if total_frames > 0:
+            dlog.info(
+                "%s at iter.%06d; sampled %d frames, provisional candidates=%d, final candidates=%d",
+                reason,
+                self.ii,
+                total_frames,
+                provisional_candidate_count,
+                final_candidate_count,
+            )
+        else:
+            dlog.info(
+                "%s at iter.%06d; no analyzable sampling frames were produced",
+                reason,
+                self.ii,
+            )
+
+        raise TrainingCompletedException(
+            f"{reason}. No new structures were selected, so the workflow stops normally."
+        )
 
     def _finalize_iteration(self, config):
         """完成迭代处理"""
@@ -2435,6 +2592,11 @@ class Nepactive(object):
         return atoms_list, frame_property, first_row_index
 
     def make_label_task(self):
+        candidate_file = os.path.join(self.iter_dir, "02.label", "candidate.xyz")
+        if (not os.path.exists(candidate_file)) or os.path.getsize(candidate_file) == 0:
+            raise TrainingCompletedException(
+                "No candidate structures are available for labeling. The workflow stops normally."
+            )
         label_engine = self.idata.get("label_engine","mattersim")
         if label_engine == "mattersim":
             self.make_mattersim_task()

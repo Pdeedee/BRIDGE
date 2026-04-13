@@ -277,12 +277,12 @@ ZeroRotation(atoms)
 traj = Trajectory('out.traj', 'w', atoms)
 # pfactor= 100 #120
 pressure = 0
-timestep = 0.2 * units.fs
-dyn = MTTK(atoms,timestep=0.2*units.fs,run_steps=steps,t_stop=temperature_K,p_stop=pressure,pmode=None, tchain=3, pchain=3)
+timestep = {time_step} * units.fs
+dyn = MTTK(atoms,timestep=timestep,run_steps=steps,t_stop=temperature_K,p_stop=pressure,pmode=None, tchain=3, pchain=3)
 # dyn = NVTBerendsen(atoms, timestep=0.1*units.fs, temperature_K=300*units.kB, taut=0.5*1000*units.fs)
 dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
-        volume=True, mode="w"), interval=10)
-dyn.attach(traj.write, interval=10)
+        volume=True, mode="w"), interval={dump_freq})
+dyn.attach(traj.write, interval={dump_freq})
 dyn.run(steps)
 
 """
@@ -317,12 +317,12 @@ ZeroRotation(atoms)
 traj = Trajectory('out.traj', 'w', atoms)
 # pfactor= 100 #120
 pressure = {pressure} * units.GPa
-timestep = 0.2 * units.fs
-dyn = MTTK(atoms,timestep=0.2*units.fs,run_steps=steps,t_stop=temperature_K,p_stop=pressure,pmode="iso", tchain=3, pchain=3)
+timestep = {time_step} * units.fs
+dyn = MTTK(atoms,timestep=timestep,run_steps=steps,t_stop=temperature_K,p_stop=pressure,pmode="iso", tchain=3, pchain=3)
 # dyn = NVTBerendsen(atoms, timestep=0.1*units.fs, temperature_K=300*units.kB, taut=0.5*1000*units.fs)
 dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
-        volume=True, mode="w"), interval=10)
-dyn.attach(traj.write, interval=10)
+        volume=True, mode="w"), interval={dump_freq})
+dyn.attach(traj.write, interval={dump_freq})
 dyn.run(steps)
 
 """

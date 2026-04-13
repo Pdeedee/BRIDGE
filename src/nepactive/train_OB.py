@@ -595,7 +595,7 @@ class Nepactive_OB(Nepactive):
             if not os.path.isfile("test.xyz"):
                 os.symlink("../dataset/test.xyz","test.xyz")
             if self.ii == 0:
-                ini_train_steps = self.idata.get("ini_train_steps", 10000)
+                ini_train_steps = self.idata.get("ini_train_steps", 20000)
                 nep_in = self._build_nep_in_content(
                     jj,
                     pot_inherit=pot_inherit,

@@ -79,6 +79,14 @@ def _augment_with_single_atoms(element_counts: Counter, molecules_dict: dict) ->
 
     return augmented
 
+
+def _as_list(value):
+    if value in (None, "", [], {}):
+        return []
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return list(value)
+    return [value]
+
 # ---------------------------------------------------------------------------
 #  BaseRun — 共享逻辑
 # ---------------------------------------------------------------------------
@@ -109,6 +117,26 @@ class BaseRun:
             "ase_model_file": repr(cfg["model_file"]),
             "ase_nep_backend": repr(cfg["nep_backend"]),
         }
+
+    def _resolve_init_md_config(self) -> dict:
+        sampling = self.idata.get("sampling", {})
+        general = sampling.get("general", {}) if isinstance(sampling, dict) else {}
+        resolved = dict(self.sdata) if isinstance(self.sdata, dict) else {}
+        for key in ("ensembles", "temperature", "pressure", "time_step", "tau_t", "tau_p", "pperiod", "elastic_modulus", "pmode"):
+            value = resolved.get(key)
+            if value in (None, "", [], {}):
+                fallback = general.get(key)
+                if fallback not in (None, "", [], {}):
+                    resolved[key] = fallback
+        return resolved
+
+    def _reset_task_dirs(self) -> None:
+        """删除当前结构目录下旧的 task.*，确保重新生成的任务与当前 YAML 一致。"""
+        for path in glob("task.*"):
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+            elif os.path.exists(path):
+                os.remove(path)
 
     def calculate_properties(self):
         dlog.info("start calculating properties")
@@ -164,85 +192,92 @@ class BaseRun:
     def make_pytasks(self):
         """根据压力生成 python ensemble 任务"""
         work_dir = os.getcwd()
-        steps = self.sdata.get("steps", 400000)
-        time_step = self.sdata.get("time_step", 0.2)
-        self.total_time = steps * time_step
-        dump_freq = self.sdata.get("dump_freq", 100)
-        tau_t = self.sdata.get("tau_t", 100)
-        tau_p = self.sdata.get("tau_p", 2000)
-        elastic_modulus = self.sdata.get("elastic_modulus", 15.0)
-        pmode = self.sdata.get("pmode", "iso")
+        init_cfg = self._resolve_init_md_config()
+        steps = init_cfg.get("steps", 400000)
+        time_step_list = _as_list(init_cfg.get("time_step", 0.2)) or [0.2]
+        self.total_time = max(float(steps) * float(time_step) for time_step in time_step_list)
+        dump_freq = init_cfg.get("dump_freq", 100)
+        tau_t = init_cfg.get("tau_t", 100)
+        tau_p = init_cfg.get("tau_p", 2000)
+        elastic_modulus = init_cfg.get("elastic_modulus", 15.0)
+        pmode = init_cfg.get("pmode", "iso")
         p0 = getattr(self, 'p0', 0)
-        temperature_list = self.sdata.get("temperature", [3000])
-        temperature = temperature_list[0] if temperature_list else 3000
-        ensemble = self._resolve_init_ase_ensemble()
-        dlog.info(f"Using ASE init ensemble: {ensemble}")
-        for ii, _ in enumerate(self.pressure_list):
-            os.chdir(work_dir)
-            task_dir = os.path.join(work_dir, f"task.{ii:03d}")
-            os.makedirs(task_dir, exist_ok=True)
-            os.chdir(task_dir)
-            # 优先使用 POSCAR，兼容旧版 stable.pdb
-            struc_file = "../structure/POSCAR" if os.path.exists("../structure/POSCAR") else "../structure/stable.pdb"
-            if ensemble == "nvt":
-                py_file = nvt_pytemplate.format(
-                    structure=struc_file,
-                    temperature=temperature,
-                    steps=steps,
-                    **self._ase_template_kwargs(),
-                )
-            elif ensemble == "npt":
-                py_file = npt_pytemplate.format(
-                    structure=struc_file,
-                    temperature=temperature,
-                    pressure=self.pressure_list[ii],
-                    steps=steps,
-                    **self._ase_template_kwargs(),
-                )
-            elif ensemble == "npt_scr":
-                py_file = npt_scr_pytemplate.format(
-                    structure=struc_file,
-                    temperature=temperature,
-                    pressure=self.pressure_list[ii],
-                    steps=steps,
-                    dump_freq=dump_freq,
-                    time_step=time_step,
-                    tau_t=tau_t,
-                    tau_p=tau_p,
-                    elastic_modulus=elastic_modulus,
-                    pmode=pmode,
-                    **self._ase_template_kwargs(),
-                )
-            elif ensemble in {"nphugo_scr", "nphugo_mttk", "nphugo"}:
-                py_file = nphugo_scr_pytemplate.format(
-                    structure=struc_file,
-                    e0=self.energy,
-                    p0=p0,
-                    v0=self.r_v,
-                    dump_freq=dump_freq,
-                    pressure=self.pressure_list[ii],
-                    steps=steps,
-                    time_step=time_step,
-                    tau_t=tau_t,
-                    tau_p=tau_p,
-                    pmode=pmode,
-                    **self._ase_template_kwargs(),
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported ASE init ensemble: {ensemble}. "
-                    "Supported values are nvt, npt, npt_scr, nphugo_scr, nphugo_mttk."
-                )
-            with open("ensemble.py", "w", encoding='utf-8') as f:
-                f.write(py_file)
+        temperature_list = _as_list(init_cfg.get("temperature", [3000])) or [3000]
+        pressure_list = _as_list(init_cfg.get("pressure", self.pressure_list)) or list(self.pressure_list)
+        ensembles = self._resolve_init_ase_ensembles()
+        dlog.info(f"Using ASE init ensembles: {ensembles}")
+        task_index = 0
+        for ensemble in ensembles:
+            active_pressures = [None] if ensemble == "nvt" else pressure_list
+            for temperature in temperature_list:
+                for pressure in active_pressures:
+                    for time_step in time_step_list:
+                        os.chdir(work_dir)
+                        task_dir = os.path.join(work_dir, f"task.{task_index:03d}")
+                        os.makedirs(task_dir, exist_ok=True)
+                        os.chdir(task_dir)
+                        task_index += 1
+                        # 优先使用 POSCAR，兼容旧版 stable.pdb
+                        struc_file = "../structure/POSCAR" if os.path.exists("../structure/POSCAR") else "../structure/stable.pdb"
+                        if ensemble == "nvt":
+                            py_file = nvt_pytemplate.format(
+                                structure=struc_file,
+                                temperature=temperature,
+                                steps=steps,
+                                time_step=time_step,
+                                dump_freq=dump_freq,
+                                **self._ase_template_kwargs(),
+                            )
+                        elif ensemble == "npt":
+                            py_file = npt_pytemplate.format(
+                                structure=struc_file,
+                                temperature=temperature,
+                                pressure=pressure,
+                                steps=steps,
+                                time_step=time_step,
+                                dump_freq=dump_freq,
+                                **self._ase_template_kwargs(),
+                            )
+                        elif ensemble == "npt_scr":
+                            py_file = npt_scr_pytemplate.format(
+                                structure=struc_file,
+                                temperature=temperature,
+                                pressure=pressure,
+                                steps=steps,
+                                dump_freq=dump_freq,
+                                time_step=time_step,
+                                tau_t=tau_t,
+                                tau_p=tau_p,
+                                elastic_modulus=elastic_modulus,
+                                pmode=pmode,
+                                **self._ase_template_kwargs(),
+                            )
+                        elif ensemble in {"nphugo_scr", "nphugo_mttk", "nphugo"}:
+                            py_file = nphugo_scr_pytemplate.format(
+                                structure=struc_file,
+                                e0=self.energy,
+                                p0=p0,
+                                v0=self.r_v,
+                                dump_freq=dump_freq,
+                                pressure=pressure,
+                                steps=steps,
+                                time_step=time_step,
+                                tau_t=tau_t,
+                                tau_p=tau_p,
+                                pmode=pmode,
+                                **self._ase_template_kwargs(),
+                            )
+                        else:
+                            raise ValueError(
+                                f"Unsupported ASE init ensemble: {ensemble}. "
+                                "Supported values are nvt, npt, npt_scr, nphugo_scr, nphugo_mttk."
+                            )
+                        with open("ensemble.py", "w", encoding='utf-8') as f:
+                            f.write(py_file)
 
-    def _resolve_init_ase_ensemble(self) -> str:
-        sampling = self.idata.get("sampling", {})
-        general = sampling.get("general", {}) if isinstance(sampling, dict) else {}
-        ensembles = general.get("ensembles", [])
-        if isinstance(ensembles, str):
-            ensembles = [ensembles]
-
+    def _resolve_init_ase_ensembles(self) -> list[str]:
+        init_cfg = self._resolve_init_md_config()
+        ensembles = _as_list(init_cfg.get("ensembles"))
         aliases = {
             "nphugo": "nphugo_scr",
             "nphugo_scr": "nphugo_scr",
@@ -251,11 +286,12 @@ class BaseRun:
             "npt_scr": "npt_scr",
             "nvt": "nvt",
         }
+        resolved: list[str] = []
         for ensemble in ensembles:
             normalized = aliases.get(str(ensemble).strip().lower())
             if normalized is not None:
-                return normalized
-        return "nphugo_scr"
+                resolved.append(normalized)
+        return resolved or ["nphugo_scr"]
 
     def run_py_tasks(self):
         os.chdir(self.work_dir)
@@ -404,8 +440,8 @@ class InitRun(BaseRun):
                 write("POSCAR", sorted_atoms)
                 dlog.info("saved sorted POSCAR")
         os.chdir(struc_dir)
-        if not os.path.exists("task.000/ensemble.py"):
-            self.make_pytasks()
+        self._reset_task_dirs()
+        self.make_pytasks()
 
     def make_structure(self, molecule_dict: dict, name):
         dlog.info(f"start make structure according to {molecule_dict}")
@@ -489,8 +525,8 @@ class ShockRun(BaseRun):
             sorted_atoms = atoms[sorted_indices]
             write("structure/POSCAR", sorted_atoms)
             write("structure/stable.pdb", sorted_atoms)
-            if not os.path.exists("task.000/ensemble.py"):
-                self.make_pytasks()
+            self._reset_task_dirs()
+            self.make_pytasks()
 
     def post_process(self):
         if self.pot == "mattersim":
