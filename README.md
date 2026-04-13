@@ -18,6 +18,9 @@
 git clone https://github.com/Pdeedee/BRIDGE.git
 cd BRIDGE
 pip install uv
+export CUDA_HOME="/path/to/your/cuda"
+export CUDA_PATH="/path/to/your/cuda"
+export PATH=$CUDA_HOME/bin:$PATH
 uv pip install -e .
 ```
 
@@ -196,6 +199,8 @@ nep_in_header: "type 4 H C N O"
 以避免元素顺序变化导致继承权重失配。
 
 ## 势函数与采样
+
+势函数完成训练之后在init和每一代的02.label中存在`iter_train.xyz`和`iter_test.xyz`分别为每一代的训练集，测试集，拼接之后即为完整的训练集测试集。
 
 主动学习中的 ASE 路径支持两种基础模型：
 
