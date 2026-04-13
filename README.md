@@ -15,9 +15,10 @@
 推荐在仓库根目录执行：
 
 ```bash
+git clone https://github.com/Pdeedee/BRIDGE.git
+cd BRIDGE
+pip install uv
 uv pip install -e .
-# 或
-pip install -e .
 ```
 
 安装完成后可直接使用：
