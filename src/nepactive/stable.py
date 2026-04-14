@@ -158,7 +158,16 @@ class BaseRun:
             os.makedirs("structure", exist_ok=True)
             os.chdir("structure")
             if not os.path.exists("task_finished"):
-                nvt_pyfile = nvt_pytemplate.format(structure=self.struc_file_name, temperature=300, steps=2000, **self._ase_template_kwargs())
+                init_cfg = self._resolve_init_md_config()
+                prop_time_steps = _as_list(init_cfg.get("time_step", 0.2)) or [0.2]
+                nvt_pyfile = nvt_pytemplate.format(
+                    structure=self.struc_file_name,
+                    temperature=300,
+                    steps=2000,
+                    time_step=float(prop_time_steps[0]),
+                    dump_freq=int(init_cfg.get("dump_freq", 10)),
+                    **self._ase_template_kwargs(),
+                )
                 python_interpreter = self.idata.get("python_interpreter")
                 with open("ensemble.py", "w") as f:
                     f.write(nvt_pyfile)

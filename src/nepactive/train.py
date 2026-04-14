@@ -680,6 +680,28 @@ class Nepactive(object):
             "ase_nep_backend": repr(cfg["nep_backend"]),
         }
 
+    def _shock_config(self) -> dict:
+        shock_cfg = self.idata.get("shock", {})
+        if shock_cfg is None:
+            return {}
+        if not isinstance(shock_cfg, dict):
+            raise TypeError("shock must be a mapping in config")
+        return shock_cfg
+
+    def _shock_single_rho(self) -> Optional[float]:
+        rho = self._shock_config().get("rho")
+        return None if rho in (None, "", [], {}) else float(rho)
+
+    def _shock_rho_list(self) -> list[float]:
+        shock_cfg = self._shock_config()
+        rhos = shock_cfg.get("rhos")
+        if rhos not in (None, "", [], {}):
+            return [float(value) for value in self._listify(rhos)]
+        rho = shock_cfg.get("rho")
+        if rho not in (None, "", [], {}):
+            return [float(rho)]
+        return [1.0, 1.2, 1.4, 1.6, 1.8, 2.0]
+
     @staticmethod
     def _write_sampling_stats(stats_path: str, stats: dict) -> None:
         with open(stats_path, "w", encoding="utf-8") as f:
@@ -907,10 +929,10 @@ class Nepactive(object):
         # struc_dirs = []
         os.chdir(work_dir)
         # if if_stable_run:
-        rho = self.idata.get("rho", None)
+        rho = self._shock_single_rho()
         init_data:dict = self.idata.get("init", {})
         init_data["python_interpreter"] = self.idata.get("python_interpreter", "python")
-        if rho:
+        if rho is not None:
             dlog.info(f"rho is {rho}, will run stable run for rho={rho}")
             init_data["rho"] = rho
         init_run = InitRun(self.idata, init_data)
@@ -1191,9 +1213,7 @@ class Nepactive(object):
         if shock_raw is None:
             raise ValueError("shock data is None, please check your in.yaml")
         shock_data = copy.deepcopy(shock_raw)
-        rhos = self.idata.get("rhos", None)
-        if rhos is None:
-            rhos = shock_data.get("rhos", [1.0, 1.2, 1.4, 1.6, 1.8, 2.0])
+        rhos = self._shock_rho_list()
 
         # `nepactive shock` 使用 in.yaml 的 shock.pot；仅在 pot=nep 时补默认 nep 路径
         pot = shock_data.get("pot", "nep")
@@ -1233,7 +1253,7 @@ class Nepactive(object):
         write(f"{work_dir}/POSCAR", atoms)
         os.system(f"ln -snf {self.work_dir}/init/properties.txt {work_dir}/properties.txt")
         os.chdir(work_dir)
-        shock_data = self.idata.get("shock", None)
+        shock_data = copy.deepcopy(self.idata.get("shock", None))
         assert shock_data is not None, "shock data is None"
         nep_file = os.path.join(self.iter_dir, "00.nep/task.000000/nep.txt")
         shock_data["nep"] = nep_file
@@ -1256,8 +1276,8 @@ class Nepactive(object):
         final_xyz = final_xyzs[-1]
         structure_files.append(final_xyz)
         shock_data["structure_files"] = structure_files
-        rho = self.idata.get("rho", None)
-        if rho:
+        rho = self._shock_single_rho()
+        if rho is not None:
             dlog.info(f"rho is {rho}, will run shock velocity test for rho={rho}")
             shock_data["rho"] = rho
 
@@ -1690,7 +1710,7 @@ class Nepactive(object):
             if not real_p0:
                 dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
                 p0 = [0]
-            rho = self.idata.get("rho")
+            rho = self._shock_single_rho()
             if rho is None:
                 rho = o_rho
                 dlog.info(f"rho is not set, keep original density {o_rho}")

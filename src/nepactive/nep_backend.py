@@ -57,9 +57,11 @@ def resolve_ase_model_path(model_name: str | None = None, model_file: str | Path
 
 def get_ase_model_config(data: dict | None = None) -> dict:
     cfg = data or {}
+    if cfg.get("pot_file") not in (None, "", [], {}):
+        raise ValueError("`pot_file` has been removed. Use `ase_model_file` instead.")
     return {
         "model_name": normalize_ase_model_name(cfg.get("ase_model", "mattersim")),
-        "model_file": cfg.get("ase_model_file", cfg.get("pot_file")),
+        "model_file": cfg.get("ase_model_file"),
         "nep_backend": str(cfg.get("ase_nep_backend", "gpu") or "gpu").lower(),
     }
 
