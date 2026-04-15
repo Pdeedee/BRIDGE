@@ -87,6 +87,13 @@ def _as_list(value):
         return list(value)
     return [value]
 
+
+def _as_scalar_float(value, field_name: str) -> float:
+    values = _as_list(value)
+    if len(values) != 1:
+        raise ValueError(f"{field_name} must resolve to exactly one scalar value, got: {value!r}")
+    return float(values[0])
+
 # ---------------------------------------------------------------------------
 #  BaseRun — 共享逻辑
 # ---------------------------------------------------------------------------
@@ -159,12 +166,12 @@ class BaseRun:
             os.chdir("structure")
             if not os.path.exists("task_finished"):
                 init_cfg = self._resolve_init_md_config()
-                prop_time_steps = _as_list(init_cfg.get("time_step", 0.2)) or [0.2]
+                prop_time_step = _as_scalar_float(init_cfg.get("time_step", 0.2), "init.time_step")
                 nvt_pyfile = nvt_pytemplate.format(
                     structure=self.struc_file_name,
                     temperature=300,
                     steps=2000,
-                    time_step=float(prop_time_steps[0]),
+                    time_step=prop_time_step,
                     dump_freq=int(init_cfg.get("dump_freq", 10)),
                     **self._ase_template_kwargs(),
                 )
@@ -221,6 +228,7 @@ class BaseRun:
             for temperature in temperature_list:
                 for pressure in active_pressures:
                     for time_step in time_step_list:
+                        time_step_value = _as_scalar_float(time_step, "init.time_step")
                         os.chdir(work_dir)
                         task_dir = os.path.join(work_dir, f"task.{task_index:03d}")
                         os.makedirs(task_dir, exist_ok=True)
@@ -233,7 +241,7 @@ class BaseRun:
                                 structure=struc_file,
                                 temperature=temperature,
                                 steps=steps,
-                                time_step=time_step,
+                                time_step=time_step_value,
                                 dump_freq=dump_freq,
                                 **self._ase_template_kwargs(),
                             )
@@ -243,7 +251,7 @@ class BaseRun:
                                 temperature=temperature,
                                 pressure=pressure,
                                 steps=steps,
-                                time_step=time_step,
+                                time_step=time_step_value,
                                 dump_freq=dump_freq,
                                 **self._ase_template_kwargs(),
                             )
@@ -254,7 +262,7 @@ class BaseRun:
                                 pressure=pressure,
                                 steps=steps,
                                 dump_freq=dump_freq,
-                                time_step=time_step,
+                                time_step=time_step_value,
                                 tau_t=tau_t,
                                 tau_p=tau_p,
                                 elastic_modulus=elastic_modulus,
@@ -270,7 +278,7 @@ class BaseRun:
                                 dump_freq=dump_freq,
                                 pressure=pressure,
                                 steps=steps,
-                                time_step=time_step,
+                                time_step=time_step_value,
                                 tau_t=tau_t,
                                 tau_p=tau_p,
                                 pmode=pmode,
