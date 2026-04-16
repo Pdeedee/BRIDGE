@@ -272,10 +272,6 @@ nep-fps dump.xyz --descriptor nep --model resources/nep89_20250409.txt --pca-plo
 
 用于基于邻居关系识别结构或轨迹中的分子组成。
 
-### `nep-product`
-
-用于根据元素组成求解可能的爆轰产物分布，并生成 Packmol 初始结构。
-
 ## 相关文档
 
 - [docs/job_submission_guide.md](/workplace/liuzf/code/BRIDGE/docs/job_submission_guide.md)
