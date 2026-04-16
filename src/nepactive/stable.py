@@ -496,6 +496,11 @@ class ShockRun(BaseRun):
             assert self.nep is not None, "nep is None"
         dlog.info(f"ShockRun: {sdata}")
 
+    def _resolve_init_md_config(self) -> dict:
+        resolved = super()._resolve_init_md_config()
+        resolved["pressure"] = _as_list(self.sdata.get("pressure_list", self.pressure_list)) or list(self.pressure_list)
+        return resolved
+
     def run(self):
         dlog.info(f"ShockRun: {self.sdata}")
         self.calculate_properties()

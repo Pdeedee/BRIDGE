@@ -1,5 +1,16 @@
 # nepactive
 
+## 许可证
+
+本仓库采用自定义的非商业许可证：
+
+- 允许源码查看、非商业学术研究、教学和论文复现
+- 禁止商业产品、商业服务、付费部署、API/SaaS、企业经营性使用、转售和再许可
+- 商业使用必须取得单独书面授权
+
+完整条款见 [LICENSE](/workplace/liuzf/code/BRIDGE/LICENSE)。
+商业授权说明见 [COMMERCIAL-LICENSE.md](/workplace/liuzf/code/BRIDGE/COMMERCIAL-LICENSE.md)。
+
 `nepactive` 是一个面向含能材料体系的主动学习工作流，覆盖 NEP 势训练、偏差驱动采样、ASE/MatterSim 标注、爆速测试和相关后处理。
 
 ## 功能概览
@@ -85,6 +96,32 @@ project/
 
 ```bash
 nepactive
+```
+
+## 运行状态与停止
+
+查看 `nepactive` 进程 PID：
+
+```bash
+pgrep -af nepactive
+```
+
+查看每个 `nepactive` 进程当前工作目录：
+
+```bash
+pgrep nepactive | xargs pwdx
+```
+
+正常终止任务：
+
+```bash
+kill -TERM <pid>
+```
+
+例如：
+
+```bash
+kill -TERM 12345
 ```
 
 默认主动学习流程会依次执行：
@@ -246,11 +283,4 @@ nep-fps dump.xyz --descriptor nep --model resources/nep89_20250409.txt --pca-plo
 - [src/nepactive/README_product.md](/workplace/liuzf/code/BRIDGE/src/nepactive/README_product.md)
 - [examples/in_full_config.yaml](/workplace/liuzf/code/BRIDGE/examples/in_full_config.yaml)
 
-## 许可证与引用
 
-本仓库中的部分采样思路、NEP backend 集成方向及相关实现参考了 `NepTrainKit`：
-
-- 仓库：`https://github.com/aboys-cb/NepTrainKit`
-- 许可证：`GPL-3.0-or-later`
-
-如果你继续分发或修改相关参考/移植代码，需要遵守对应许可证要求。学术使用时也建议一并引用 NepTrainKit。
