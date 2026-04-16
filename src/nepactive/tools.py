@@ -1,5 +1,7 @@
 from ase import Atoms
 from ase.io import read,write
+from ase.neighborlist import neighbor_list
+from ase.geometry import find_mic
 from typing import List
 import numpy as np
 from mattersim.forcefield import MatterSimCalculator
@@ -332,10 +334,79 @@ def compute_volume_from_thermo(thermo:np.ndarray):
     else:
         raise ValueError("thermo file has wrong format")
     
-def get_shortest_distance(atoms:Atoms,atom_index=None):
-    distance_matrix = atoms.get_all_distances(mic=True)
-    np.fill_diagonal(distance_matrix, np.inf)
-    min_index = np.unravel_index(np.argmin(distance_matrix), distance_matrix.shape)
+def _estimate_neighbor_cutoff_bounds(atoms: Atoms) -> tuple[float, float]:
+    lengths = np.asarray(atoms.cell.lengths(), dtype=float)
+    positive_lengths = lengths[lengths > 1e-8]
+    if positive_lengths.size:
+        min_length = float(np.min(positive_lengths))
+        max_length = float(np.max(positive_lengths))
+    else:
+        positions = atoms.get_positions()
+        if len(positions) <= 1:
+            return 2.0, 2.0
+        span = np.ptp(positions, axis=0)
+        positive_span = span[span > 1e-8]
+        if positive_span.size:
+            min_length = float(np.min(positive_span))
+            max_length = float(np.max(positive_span))
+        else:
+            min_length = 2.0
+            max_length = 2.0
+    initial_cutoff = max(2.0, min_length * 0.15)
+    max_cutoff = max(initial_cutoff, max_length * np.sqrt(3.0))
+    return initial_cutoff, max_cutoff
+
+
+def _get_shortest_distance_fallback(atoms: Atoms, atom_index=None) -> float:
+    positions = atoms.get_positions()
+    cell = atoms.cell
+    pbc = atoms.pbc
+    min_distance = np.inf
+    min_pair = None
+    for ii in range(len(atoms) - 1):
+        deltas = positions[ii + 1 :] - positions[ii]
+        _, distances = find_mic(deltas, cell, pbc=pbc)
+        local_index = int(np.argmin(distances))
+        local_distance = float(distances[local_index])
+        if local_distance < min_distance:
+            min_distance = local_distance
+            min_pair = (ii, ii + 1 + local_index)
     if atom_index is not None:
-        atom_index.append(min_index)
-    return np.min(distance_matrix)
+        atom_index.append(min_pair)
+    return min_distance
+
+
+def get_shortest_distance(atoms:Atoms,atom_index=None):
+    if len(atoms) < 2:
+        if atom_index is not None:
+            atom_index.append(None)
+        return np.inf
+
+    cutoff, max_cutoff = _estimate_neighbor_cutoff_bounds(atoms)
+    min_pair = None
+    min_distance = np.inf
+
+    while cutoff <= max_cutoff + 1e-8:
+        i_list, j_list, d_list = neighbor_list("ijd", atoms, cutoff)
+        if len(d_list):
+            i_arr = np.asarray(i_list, dtype=int)
+            j_arr = np.asarray(j_list, dtype=int)
+            d_arr = np.asarray(d_list, dtype=float)
+            mask = i_arr < j_arr
+            if np.any(mask):
+                filtered_distances = d_arr[mask]
+                min_pos = int(np.argmin(filtered_distances))
+                filtered_i = i_arr[mask]
+                filtered_j = j_arr[mask]
+                min_pair = (int(filtered_i[min_pos]), int(filtered_j[min_pos]))
+                min_distance = float(filtered_distances[min_pos])
+                break
+        cutoff *= 2.0
+
+    if not np.isfinite(min_distance):
+        min_distance = _get_shortest_distance_fallback(atoms, atom_index=atom_index)
+        return min_distance
+
+    if atom_index is not None:
+        atom_index.append(min_pair)
+    return min_distance
