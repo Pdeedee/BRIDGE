@@ -6,13 +6,20 @@ from typing import Iterable
 
 from ase import Atoms
 from ase.io import read, write
+from ase.io.formats import ioformats
 
 
-FORMAT_TO_SUFFIX = {
-    "vasp": ".vasp",
-    "xyz": ".xyz",
-    "traj": ".traj",
-}
+def _read_images(structure: str, index: str):
+    try:
+        return read(structure, index=index)
+    except Exception as exc:
+        suffix = Path(structure).suffix.lower()
+        if suffix != ".xyz":
+            raise
+        try:
+            return read(structure, index=index, format="xyz")
+        except Exception:
+            raise exc
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
@@ -64,9 +71,38 @@ def _sort_atoms(atoms: Atoms) -> Atoms:
     return atoms[order]
 
 
-def _default_output_filename(structure: str, output_format: str) -> str:
+def _resolve_output_format(output_format: str) -> str:
+    normalized = str(output_format).strip().lower()
+    matches = [
+        name
+        for name, fmt in ioformats.items()
+        if normalized in {ext.lower() for ext in (getattr(fmt, "extensions", None) or [])}
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if normalized in ioformats:
+        return normalized
+    if not matches:
+        raise ValueError(f"Unsupported ASE output format: {output_format}")
+    raise ValueError(
+        f"Ambiguous output format '{output_format}', matches ASE formats: {', '.join(sorted(matches))}"
+    )
+
+
+def _default_output_suffix(requested_format: str, resolved_format: str) -> str:
+    normalized = str(requested_format).strip().lower()
+    if normalized in {"xyz", "pdb", "vasp", "traj", "cif", "json"}:
+        return f".{normalized}"
+    fmt = ioformats.get(resolved_format)
+    extensions = getattr(fmt, "extensions", None) or []
+    if extensions:
+        return f".{extensions[0]}"
+    return f".{normalized}"
+
+
+def _default_output_filename(structure: str, output_format: str, resolved_format: str) -> str:
     source = Path(structure)
-    return str(source.with_suffix(FORMAT_TO_SUFFIX[output_format]))
+    return str(source.with_suffix(_default_output_suffix(output_format, resolved_format)))
 
 
 def convert_structure(
@@ -76,10 +112,9 @@ def convert_structure(
     duplicate: tuple[int, int, int] | None = None,
     output_filename: str | None = None,
 ) -> str:
-    if output_format not in FORMAT_TO_SUFFIX:
-        raise ValueError(f"Unsupported output format: {output_format}")
+    resolved_format = _resolve_output_format(output_format)
 
-    images = _ensure_list(read(structure, index=index))
+    images = _ensure_list(_read_images(structure, index=index))
     converted: list[Atoms] = []
     for atoms in images:
         new_atoms = atoms.copy()
@@ -87,15 +122,15 @@ def convert_structure(
             new_atoms = new_atoms.repeat(duplicate)
         converted.append(_sort_atoms(new_atoms))
 
-    output_path = output_filename or _default_output_filename(structure, output_format)
-    if output_format == "vasp":
+    output_path = output_filename or _default_output_filename(structure, output_format, resolved_format)
+    if resolved_format == "vasp":
         if len(converted) != 1:
             raise ValueError("VASP output supports only a single frame. Use --index to select one frame.")
         write(output_path, converted[0], format="vasp")
-    elif output_format == "xyz":
+    elif resolved_format == "extxyz":
         write(output_path, converted, format="extxyz")
     else:
-        write(output_path, converted, format=output_format)
+        write(output_path, converted, format=resolved_format)
     return output_path
 
 
@@ -104,7 +139,7 @@ def cli(argv: list[str] | None = None) -> str:
         description="Slice structures/trajectories, optionally duplicate the cell, and convert format.",
     )
     parser.add_argument("structure", help="Input structure/trajectory file")
-    parser.add_argument("format", choices=sorted(FORMAT_TO_SUFFIX), help="Output format")
+    parser.add_argument("format", help="ASE output format name or ASE-known extension, e.g. xyz, pdb, vasp, cif, traj")
     parser.add_argument(
         "--index",
         default=":",

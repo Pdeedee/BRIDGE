@@ -155,6 +155,8 @@ nep-product POSCAR
 nep-fps dump.xyz --number 2000
 nep-plt                   # 默认读取当前目录并自动识别 md.log / thermo.out / loss.out
 nep-plt iter.000000/01.gpumd/task.000000
+nep-opt POSCAR
+nep-opt dump.xyz --index 0 --cell --hydrostatic
 ```
 
 也可以直接从源码入口运行：
@@ -278,5 +280,4 @@ nep-fps dump.xyz --descriptor nep --model resources/nep89_20250409.txt --pca-plo
 - [src/nepactive/native_nep/README.md](/workplace/liuzf/code/BRIDGE/src/nepactive/native_nep/README.md)
 - [src/nepactive/README_product.md](/workplace/liuzf/code/BRIDGE/src/nepactive/README_product.md)
 - [examples/in_full_config.yaml](/workplace/liuzf/code/BRIDGE/examples/in_full_config.yaml)
-
 

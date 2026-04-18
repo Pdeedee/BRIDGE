@@ -221,7 +221,8 @@ class BaseRun:
         temperature_list = _as_list(init_cfg.get("temperature", [3000])) or [3000]
         pressure_list = _as_list(init_cfg.get("pressure", self.pressure_list)) or list(self.pressure_list)
         ensembles = self._resolve_init_ase_ensembles()
-        dlog.info(f"Using ASE init ensembles: {ensembles}")
+        run_label = "shock" if isinstance(self, ShockRun) else "init"
+        dlog.info(f"Using ASE {run_label} ensembles: {ensembles}")
         task_index = 0
         for ensemble in ensembles:
             active_pressures = [None] if ensemble == "nvt" else pressure_list
@@ -500,6 +501,21 @@ class ShockRun(BaseRun):
         resolved = super()._resolve_init_md_config()
         resolved["pressure"] = _as_list(self.sdata.get("pressure_list", self.pressure_list)) or list(self.pressure_list)
         return resolved
+
+    def _resolve_init_ase_ensembles(self) -> list[str]:
+        init_cfg = self._resolve_init_md_config()
+        ensembles = _as_list(init_cfg.get("ensembles"))
+        aliases = {
+            "nphugo": "nphugo_scr",
+            "nphugo_scr": "nphugo_scr",
+            "nphugo_mttk": "nphugo_mttk",
+        }
+        resolved: list[str] = []
+        for ensemble in ensembles:
+            normalized = aliases.get(str(ensemble).strip().lower())
+            if normalized is not None and normalized not in resolved:
+                resolved.append(normalized)
+        return resolved or ["nphugo_scr"]
 
     def run(self):
         dlog.info(f"ShockRun: {self.sdata}")
