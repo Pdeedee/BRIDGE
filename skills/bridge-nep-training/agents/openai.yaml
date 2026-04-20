@@ -1,0 +1,4 @@
+interface:
+  display_name: "BRIDGE NEP Training"
+  short_description: "Work on BRIDGE NEP training config, workflow, and debugging"
+  default_prompt: "Work only on the BRIDGE repository's NEP training path. Focus on in.yaml, dataset assembly, nep.in generation, 00.nep task layout, and training-stage debugging. Exclude shock velocity and HOD unless explicitly requested."
