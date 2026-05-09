@@ -2,12 +2,18 @@
 import numpy as np
 
 
-def gpumd_cell_is_triclinic(atoms, atol=1.0e-10):
-    """Return True if the cell has non-zero off-diagonal components in GPUMD's sense."""
+def gpumd_cell_is_triclinic(atoms, atol=None):
+    """Return True if GPUMD will treat the extxyz cell as triclinic."""
     cell = np.asarray(atoms.get_cell(complete=True), dtype=float)
-    off_diagonal = cell.copy()
-    np.fill_diagonal(off_diagonal, 0.0)
-    return not np.allclose(off_diagonal, 0.0, atol=atol)
+    gpumd_h = cell.T
+    gpumd_off_diagonal = gpumd_h.copy()
+    np.fill_diagonal(gpumd_off_diagonal, 0.0)
+
+    if atol is None:
+        # GPUMD checks these components with exact `!= 0`, so mirror that
+        # behavior to choose the matching pressure syntax.
+        return bool(np.any(gpumd_off_diagonal != 0.0))
+    return not np.allclose(gpumd_off_diagonal, 0.0, atol=atol)
 
 
 def _as_float_list(value):
@@ -26,12 +32,85 @@ def _fmt_values(values):
     return " ".join(_fmt_scalar(value) for value in values)
 
 
+def _build_mttk_pressure_clause(pressure, triclinic):
+    pressures = _as_float_list(pressure)
+    if pressures is None:
+        pressure_value = float(pressure)
+        pressures = [pressure_value]
+
+    if triclinic:
+        if len(pressures) == 1:
+            p = pressures[0]
+            return f"tri {_fmt_scalar(p)} {_fmt_scalar(p)}"
+        elif len(pressures) == 3 and np.allclose(pressures, pressures[0]):
+            p = pressures[0]
+            return f"tri {_fmt_scalar(p)} {_fmt_scalar(p)}"
+        elif len(pressures) == 3:
+            pressures = [pressures[0], pressures[1], pressures[2], 0.0, 0.0, 0.0]
+        elif len(pressures) != 6:
+            raise ValueError("Triclinic GPUMD MTTK pressure must have 1, 3, or 6 components.")
+
+        labels = ("x", "y", "z", "yz", "xz", "xy")
+        return " ".join(
+            f"{label} {_fmt_scalar(value)} {_fmt_scalar(value)}"
+            for label, value in zip(labels, pressures)
+        )
+
+    if len(pressures) == 1:
+        return f"iso {_fmt_scalar(pressures[0])} {_fmt_scalar(pressures[0])}"
+    if len(pressures) == 3:
+        return " ".join(
+            f"{label} {_fmt_scalar(value)} {_fmt_scalar(value)}"
+            for label, value in zip(("x", "y", "z"), pressures)
+        )
+    if len(pressures) == 6:
+        if any(abs(value) > 1.0e-12 for value in pressures[3:]):
+            raise ValueError("Orthogonal GPUMD MTTK pressure cannot include shear components.")
+        return " ".join(
+            f"{label} {_fmt_scalar(value)} {_fmt_scalar(value)}"
+            for label, value in zip(("x", "y", "z"), pressures[:3])
+        )
+    raise ValueError("GPUMD MTTK pressure must have 1, 3, or 6 components.")
+
+
+def _build_nphug_pressure_clause(pressure, triclinic):
+    pressures = _as_float_list(pressure)
+    if pressures is None:
+        pressure_value = float(pressure)
+        pressures = [pressure_value]
+
+    if triclinic:
+        if len(pressures) == 1:
+            p = pressures[0]
+            return f"tri {_fmt_scalar(p)} {_fmt_scalar(p)}"
+        if len(pressures) == 3 and np.allclose(pressures, pressures[0]):
+            p = pressures[0]
+            return f"tri {_fmt_scalar(p)} {_fmt_scalar(p)}"
+        if len(pressures) == 3:
+            return " ".join(
+                f"{label} {_fmt_scalar(value)} {_fmt_scalar(value)}"
+                for label, value in zip(("x", "y", "z"), pressures)
+            )
+        raise ValueError("GPUMD NPHug pressure must be scalar or 3 diagonal components.")
+
+    if len(pressures) == 1:
+        return f"iso {_fmt_scalar(pressures[0])} {_fmt_scalar(pressures[0])}"
+    if len(pressures) == 3:
+        if np.allclose(pressures, pressures[0]):
+            return f"iso {_fmt_scalar(pressures[0])} {_fmt_scalar(pressures[0])}"
+        return " ".join(
+            f"{label} {_fmt_scalar(value)} {_fmt_scalar(value)}"
+            for label, value in zip(("x", "y", "z"), pressures)
+        )
+    raise ValueError("GPUMD NPHug pressure must be scalar or 3 diagonal components.")
+
+
 def build_gpumd_npt_ensemble_line(temperature, pressure, triclinic):
-    mode = "tri" if triclinic else "iso"
+    pressure_clause = _build_mttk_pressure_clause(pressure, triclinic)
     return (
         "ensemble        npt_mttk temp "
         f"{_fmt_scalar(temperature)} {_fmt_scalar(temperature)} "
-        f"{mode} {_fmt_scalar(pressure)} {_fmt_scalar(pressure)} "
+        f"{pressure_clause} "
         "tperiod 200 pperiod 5000"
     )
 
@@ -80,10 +159,10 @@ def build_gpumd_npt_scr_ensemble_line(
 
 
 def build_gpumd_nphug_ensemble_line(pressure, e0, p0, v0, pperiod, triclinic):
-    mode = "tri" if triclinic else "iso"
+    pressure_clause = _build_nphug_pressure_clause(pressure, triclinic)
     return (
         "ensemble nphug "
-        f"{mode} {_fmt_scalar(pressure)} {_fmt_scalar(pressure)} "
+        f"{pressure_clause} "
         f"e0 {_fmt_scalar(e0)} p0 {_fmt_scalar(p0)} v0 {_fmt_scalar(v0)} "
         f"pperiod {_fmt_scalar(pperiod)}"
     )

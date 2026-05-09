@@ -2,6 +2,7 @@
 格式化输出工具 - 统一管理所有 txt 文件的格式
 """
 
+import os
 import numpy as np
 
 
@@ -122,22 +123,104 @@ def save_shock_vel_txt(filename: str, shock_vels: np.ndarray):
         filename: 文件名
         shock_vels: 爆速数据 (可以是 1D 或 2D 数组)
     """
+    shock_vels = np.asarray(shock_vels)
+
     if shock_vels.ndim == 1:
-        # 单列数据
-        headers = ["Shock_Velocity(km/s)"]
-        data = shock_vels.reshape(-1, 1)
-    else:
-        # 多列数据 (D, u, Us)
-        if shock_vels.shape[1] == 3:
-            headers = ["D(km/s)", "u(km/s)", "Us(km/s)"]
+        if shock_vels.size in (3, 4):
+            data = shock_vels.reshape(1, -1)
         else:
-            headers = [f"Shock_Vel_{i+1}(km/s)" for i in range(shock_vels.shape[1])]
+            data = shock_vels.reshape(-1, 1)
+    else:
         data = shock_vels
+
+    if data.shape[1] == 1:
+        headers = ["Dv(km/s)"]
+    elif data.shape[1] == 3:
+        headers = ["Dv(km/s)", "V_CJ", "P_CJ(GPa)"]
+    elif data.shape[1] == 4:
+        headers = ["Dv(km/s)", "V_CJ", "P_CJ(GPa)", "rho(g/cm3)"]
+    else:
+        headers = [f"Shock_Vel_{i+1}(km/s)" for i in range(data.shape[1])]
 
     title = "Shock Velocity Results"
     fmt = "%12.3f"
 
     save_formatted_txt(filename, data, headers, title, fmt)
+
+
+def append_shock_summary_txt(
+    filename: str,
+    iteration_tag: str,
+    dv: float,
+    vcj: float,
+    pcj: float,
+    rho: float,
+    hod: float = None,
+):
+    """
+    追加 shock 主流程摘要到 txt，保持列对齐。
+    """
+    headers = ["Iteration", "Dv(km/s)", "V_CJ", "P_CJ(GPa)", "rho(g/cm3)", "HOD(kJ/kg)"]
+    widths = [15, 14, 14, 14, 14, 14]
+    total_width = sum(widths)
+
+    if hod is not None and not np.isfinite(hod):
+        hod = None
+
+    if not os.path.exists(filename):
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("=" * total_width + "\n")
+            f.write("Shock Velocity and Detonation Results".center(total_width) + "\n")
+            f.write("=" * total_width + "\n")
+            f.write("".join(header.ljust(width) for header, width in zip(headers, widths)) + "\n")
+            f.write("-" * total_width + "\n")
+
+    hod_str = f"{hod:.2f}" if hod is not None else "N/A"
+    row = [
+        iteration_tag,
+        f"{dv:.3f}",
+        f"{vcj:.4f}",
+        f"{pcj:.2f}",
+        f"{rho:.3f}",
+        hod_str,
+    ]
+    with open(filename, "a", encoding="utf-8") as f:
+        f.write("".join(value.ljust(width) for value, width in zip(row, widths)) + "\n")
+
+
+def append_shock_detail_txt(filename: str, shock_vels: np.ndarray, rho: float = None):
+    """
+    追加 shock 明细结果到 txt，适用于 `nepactive shock` 目录下的汇总文件。
+    """
+    headers = ["rho(g/cm3)", "Structure", "Dv(km/s)", "V_CJ", "P_CJ(GPa)"]
+    widths = [14, 14, 14, 14, 14]
+    total_width = sum(widths)
+
+    data = np.asarray(shock_vels)
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+
+    if not os.path.exists(filename):
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("=" * total_width + "\n")
+            f.write("Shock Velocity Results".center(total_width) + "\n")
+            f.write("=" * total_width + "\n")
+            f.write("".join(header.ljust(width) for header, width in zip(headers, widths)) + "\n")
+            f.write("-" * total_width + "\n")
+
+    with open(filename, "a", encoding="utf-8") as f:
+        for index, row in enumerate(data):
+            row_rho = float(row[3]) if row.shape[0] > 3 else rho
+            row_vcj = float(row[1]) if row.shape[0] > 1 else np.nan
+            row_pcj = float(row[2]) if row.shape[0] > 2 else np.nan
+            values = [
+                f"{row_rho:.3f}" if row_rho is not None else "N/A",
+                f"struc.{index:03d}",
+                f"{float(row[0]):.3f}",
+                f"{row_vcj:.4f}" if np.isfinite(row_vcj) else "N/A",
+                f"{row_pcj:.2f}" if np.isfinite(row_pcj) else "N/A",
+            ]
+            f.write("".join(value.ljust(width) for value, width in zip(values, widths)) + "\n")
 
 
 def append_shock_hod_txt(filename: str, iteration: int, shock_vel: float, hod: float = None):

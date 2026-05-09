@@ -104,7 +104,7 @@ shock:                         # Hugoniostat 爆速测试设置
   time_step: 0.4               # 时间步长，单位为fs
   dump_freq: 10                # dump频率，单位为步数
   analyze_range: [0.8,1]       # 爆速测试的分析范围
-  pot: "mattersim"             # shock 阶段独立使用的势函数: "nep"(GPUMD) / "mattersim"
+  pot: "nep"             # shock 阶段独立使用的势函数: "nep"(GPUMD) / "mattersim"
   # tau_t: 100                 # BDP 恒温器弛豫时间 (默认 100)
   # tau_p: 2000                # SCR 气压计弛豫时间 (默认 2000)
   # pmode: "iso"               # 压力模式 (默认 "iso")

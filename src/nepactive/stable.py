@@ -25,6 +25,7 @@ from nepactive.plt import ase_plt, gpumdplt
 from nepactive.tools import shock_calculate, run_gpumd_task, run_py_tasks, compute_volume_from_thermo
 from ase.io.extxyz import write_extxyz
 from nepactive.nep_backend import create_ase_calculator, get_ase_model_config
+from nepactive.format_output import save_shock_vel_txt
 
 SUPPORTED_MOLECULAR_ELEMENTS = ("C", "H", "O", "N")
 MOLECULAR_LIBRARY_STOICH = {
@@ -92,6 +93,13 @@ def _as_scalar_float(value, field_name: str) -> float:
     values = _as_list(value)
     if len(values) != 1:
         raise ValueError(f"{field_name} must resolve to exactly one scalar value, got: {value!r}")
+    return float(values[0])
+
+
+def _first_scalar_float(value, field_name: str) -> float:
+    values = _as_list(value)
+    if not values:
+        raise ValueError(f"{field_name} must resolve to at least one scalar value, got: {value!r}")
     return float(values[0])
 
 # ---------------------------------------------------------------------------
@@ -166,7 +174,9 @@ class BaseRun:
             os.chdir("structure")
             if not os.path.exists("task_finished"):
                 init_cfg = self._resolve_init_md_config()
-                prop_time_step = _as_scalar_float(init_cfg.get("time_step", 0.2), "init.time_step")
+                # Property pre-run only needs one timestep; init task expansion still
+                # uses the full list later in make_pytasks().
+                prop_time_step = _first_scalar_float(init_cfg.get("time_step", 0.2), "init.time_step")
                 nvt_pyfile = nvt_pytemplate.format(
                     structure=self.struc_file_name,
                     temperature=300,
@@ -629,8 +639,7 @@ class ShockRun(BaseRun):
             shock_vels.append(shock_vel)
         os.chdir(self.work_dir)
         self.shock_vels = np.array(shock_vels)
-        with open("shock_vel.txt", 'w') as file:
-            np.savetxt(file, np.array(shock_vels), fmt="%12.2f")
+        save_shock_vel_txt("shock_vel.txt", self.shock_vels)
         dlog.info("saved shock_vel.txt")
 
     def post_pyprocess(self):
@@ -677,8 +686,7 @@ class ShockRun(BaseRun):
             shock_vels.append(shock_vel)
         os.chdir(self.work_dir)
         self.shock_vels = np.array(shock_vels)
-        with open("shock_vel.txt", 'w') as file:
-            np.savetxt(file, np.array(shock_vels), fmt="%12.2f")
+        save_shock_vel_txt("shock_vel.txt", self.shock_vels)
         dlog.info("saved shock_vel.txt")
 
     def make_gpumd_tasks(self):

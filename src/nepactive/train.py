@@ -25,6 +25,7 @@ from tqdm import tqdm
 from nepactive import dlog, parse_yaml
 from nepactive.extract import analyze_trajectory
 from nepactive.force import force_main
+from nepactive.format_output import append_shock_detail_txt, append_shock_summary_txt
 from nepactive.packmol import make_structure
 from nepactive.plt import ase_plt, gpumdplt, nep_plt
 from nepactive.remote import Remotetask
@@ -1230,6 +1231,10 @@ class Nepactive(object):
         if not os.path.isfile("properties.txt"):
             raise ValueError("properties.txt is not found, please check your in.yaml")
 
+        shock_vel_txt = os.path.join(self.work_dir, "shock_vel.txt")
+        if os.path.exists(shock_vel_txt):
+            os.remove(shock_vel_txt)
+
         for rho in rhos:
             os.chdir(self.work_dir)
             os.makedirs(f"{rho}",exist_ok=True)
@@ -1241,8 +1246,11 @@ class Nepactive(object):
             shock_task = ShockRun(self.idata, shock_data)
             shock_task.run()
             dlog.info(f"Shock velocity test for rho={rho} completed")
-            with open(f"{self.work_dir}/shock_vel.txt", "a") as f:
-                np.savetxt(f, np.array(shock_task.shock_vels), fmt='%.3f', header='Shock velocities (km/s) for each rho')
+            append_shock_detail_txt(
+                shock_vel_txt,
+                shock_task.shock_vels,
+                rho=rho,
+            )
 
 
     def shock_vel_test(self):
@@ -1318,20 +1326,16 @@ class Nepactive(object):
             writer.writerow([f"iter.{self.ii:06d}", f"{dv_mean:.3f}", f"{vcj_mean:.4f}",
                              f"{pcj_mean:.2f}", f"{rho_mean:.3f}", hod_csv])
 
-        # 保存到 txt 格式（格式化对齐，方便 vi 查看）
         shock_vel_txt = f"{self.work_dir}/shock_vel.txt"
-        if not os.path.exists(shock_vel_txt):
-            with open(shock_vel_txt, "w") as f:
-                f.write("="*100 + "\n")
-                f.write("Shock Velocity and Detonation Results\n")
-                f.write("="*100 + "\n")
-                f.write(f"{'Iteration':<15} {'Dv(km/s)':<14} {'V_CJ':<14} {'P_CJ(GPa)':<14} {'rho(g/cm3)':<14} {'HOD(kJ/kg)':<14}\n")
-                f.write("-"*100 + "\n")
-
-        with open(shock_vel_txt, "a") as f:
-            hod_str = f"{Q_release:.2f}" if Q_release else "N/A"
-            iter_tag = f"iter.{self.ii:06d}"
-            f.write(f"{iter_tag:<15} {dv_mean:<14.3f} {vcj_mean:<14.4f} {pcj_mean:<14.2f} {rho_mean:<14.3f} {hod_str:<14}\n")
+        append_shock_summary_txt(
+            shock_vel_txt,
+            iteration_tag=f"iter.{self.ii:06d}",
+            dv=dv_mean,
+            vcj=vcj_mean,
+            pcj=pcj_mean,
+            rho=rho_mean,
+            hod=Q_release,
+        )
 
         dlog.info(f"Shock velocity test completed, results: {shock_task.shock_vels} km/s")
         if Q_release:
