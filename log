@@ -1,3 +1,0 @@
-nohup: ignoring input
-/mnt/shared-storage-user/liuzifeng/miniforge3/envs/mattersim/lib/python3.11/site-packages/mattersim/__version__.py:2: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
-  import pkg_resources
