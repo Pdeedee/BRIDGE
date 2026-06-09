@@ -79,30 +79,19 @@ def _build_nphug_pressure_clause(pressure, triclinic):
         pressure_value = float(pressure)
         pressures = [pressure_value]
 
-    if triclinic:
-        if len(pressures) == 1:
-            p = pressures[0]
-            return f"tri {_fmt_scalar(p)} {_fmt_scalar(p)}"
-        if len(pressures) == 3 and np.allclose(pressures, pressures[0]):
-            p = pressures[0]
-            return f"tri {_fmt_scalar(p)} {_fmt_scalar(p)}"
-        if len(pressures) == 3:
-            return " ".join(
-                f"{label} {_fmt_scalar(value)} {_fmt_scalar(value)}"
-                for label, value in zip(("x", "y", "z"), pressures)
-            )
-        raise ValueError("GPUMD NPHug pressure must be scalar or 3 diagonal components.")
-
+    # GPUMD NPHug `tri` can over-deform triclinic cells in practice; always use
+    # isotropic coupling here and reject genuinely anisotropic input.
     if len(pressures) == 1:
-        return f"iso {_fmt_scalar(pressures[0])} {_fmt_scalar(pressures[0])}"
-    if len(pressures) == 3:
+        p = pressures[0]
+        return f"iso {_fmt_scalar(p)} {_fmt_scalar(p)}"
+
+    if len(pressures) in (3, 6):
         if np.allclose(pressures, pressures[0]):
-            return f"iso {_fmt_scalar(pressures[0])} {_fmt_scalar(pressures[0])}"
-        return " ".join(
-            f"{label} {_fmt_scalar(value)} {_fmt_scalar(value)}"
-            for label, value in zip(("x", "y", "z"), pressures)
-        )
-    raise ValueError("GPUMD NPHug pressure must be scalar or 3 diagonal components.")
+            p = pressures[0]
+            return f"iso {_fmt_scalar(p)} {_fmt_scalar(p)}"
+        raise ValueError("GPUMD NPHug iso pressure requires one scalar value.")
+
+    raise ValueError("GPUMD NPHug pressure must be scalar.")
 
 
 def build_gpumd_npt_ensemble_line(temperature, pressure, triclinic):

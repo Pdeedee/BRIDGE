@@ -30,6 +30,10 @@ def main():
     parser = argparse.ArgumentParser(description="nepactive")
     sub = parser.add_subparsers(dest="command")
 
+    # nepactive dataset {dir}
+    p_dataset = sub.add_parser("dataset", help="合并 nepactive 运行目录中的 train/test 数据集")
+    p_dataset.add_argument("dir", help="nepactive 运行目录")
+
     # nepactive remote
     sub.add_parser("remote", help="扫描 in.yaml 中 remote_dirs 指定的目录并远程提交")
 
@@ -53,6 +57,15 @@ def main():
     p_hod.add_argument("--gpu", type=int, default=0, help="GPU ID")
 
     args = parser.parse_args()
+
+    if args.command == "dataset":
+        from nepactive.dataset import build_dataset
+
+        train_output, test_output, train_count, test_count = build_dataset(args.dir)
+        print(f"train.xyz <- {train_count} files: {train_output}")
+        print(f"test.xyz  <- {test_count} files: {test_output}")
+        return
+
     idata: dict = parse_yaml("in.yaml")
 
     if args.command == "remote":
