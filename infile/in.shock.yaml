@@ -86,7 +86,7 @@ init:                          # 初始产物结构生成设置
   # structure_id: [[0,1]]      # 初始阶段参与的结构编号；不填时默认使用全部有效 structure_files
   # train_data: ["prep/init_train.xyz"]   # 额外并入初始训练集的已标注 extxyz/xyz 数据
   # test_data: ["prep/init_test.xyz"]     # 额外并入初始测试集的已标注 extxyz/xyz 数据
-  pressure: [20,40,60,80]      # 初始数据集的压力列表，单位为GPa
+  pressure: [20,40,60]      # 初始数据集的压力列表，单位为GPa
   temperature: [3000]          # 初始数据集的温度列表，单位为K；不填时回退到 sampling.general.temperature
   steps: 40000                 # 初始数据集的运行步数
   time_step: [0.2]             # 初始数据集的时间步长列表，单位为fs；会与 ensemble/temperature/pressure 一起组合
