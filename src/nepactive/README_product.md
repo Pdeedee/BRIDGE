@@ -32,5 +32,5 @@
   # 求解 + 每种方案生成3个结构
   python make_product.py POSCAR -n 3
 
-  # 指定密度和输出前缀
-  python make_product.py POSCAR -d 1600 -o CL20
+  # 指定粒子数密度和输出前缀
+  python make_product.py POSCAR -d 0.1 -o CL20

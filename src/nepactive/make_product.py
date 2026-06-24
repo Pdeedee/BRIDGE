@@ -28,8 +28,6 @@ from collections import Counter
 from scipy.optimize import milp, Bounds
 from ase.io import read, write
 from ase.optimize import LBFGS
-from ase.filters import UnitCellFilter
-from ase import units
 
 # ============================================================
 # 1. 分子定义
@@ -332,17 +330,18 @@ def _write_pdb_files(molecule_dict, work_dir, pdb_dir=None):
                 f.write("END\n")
 
 
-def run_packmol(molecule_dict, work_dir, density=1.8e3):
+def run_packmol(molecule_dict, work_dir, density=0.1):
+    if density <= 0:
+        raise ValueError("density must be positive")
+
     old_dir = os.getcwd()
     os.chdir(work_dir)
     try:
-        atoms_list = [read(f"{key}.pdb") for key in molecule_dict]
-        masses = [a.get_masses().sum() for a in atoms_list]
-        total_mass = sum(molecule_dict[k] * masses[i]
-                         for i, k in enumerate(molecule_dict))
-        volume = total_mass / (density * units.kg / units.m**3)
+        atoms_list = {key: read(f"{key}.pdb") for key in molecule_dict}
+        total_atoms = sum(molecule_dict[key] * len(atoms_list[key]) for key in molecule_dict)
+        volume = total_atoms / density
         length = volume ** (1 / 3)
-        print(f"目标密度: {density:.0f} kg/m^3, 盒子边长: {length:.2f} A")
+        print(f"目标粒子数密度: {density:.4f} atoms/A^3, 盒子边长: {length:.2f} A")
 
         body = "".join(
             PACKMOL_STRUCT.format(
@@ -371,8 +370,7 @@ def optimize_structure(atoms, fmax=0.05, steps=100):
     from mattersim.forcefield import MatterSimCalculator
     calc = MatterSimCalculator(device="cuda")
     atoms.calc = calc
-    ucf = UnitCellFilter(atoms, hydrostatic_strain=True)
-    opt = LBFGS(ucf)
+    opt = LBFGS(atoms)
     opt.run(fmax=fmax, steps=steps)
     print(f"优化完成, 能量: {atoms.get_potential_energy():.6f} eV")
     return atoms
@@ -382,7 +380,7 @@ def optimize_structure(atoms, fmax=0.05, steps=100):
 # 5. 主函数：生成产物结构
 # ============================================================
 
-def make_product(poscar_path, num=1, density=1.8e3, output_prefix="product",
+def make_product(poscar_path, num=1, density=0.1, output_prefix="product",
                  output_format="vasp", pdb_dir=None, fmax=0.05, opt_steps=100,
                  only_solve=False, top_k=10, yaml_path="solutions.yaml"):
     """
@@ -456,8 +454,8 @@ def main():
     parser.add_argument("poscar", help="输入结构文件 (POSCAR/xyz等)")
     parser.add_argument("-n", "--num", type=int, default=1,
                         help="每种方案生成结构数量 (默认: 1)")
-    parser.add_argument("-d", "--density", type=float, default=1.8e3,
-                        help="目标密度 kg/m^3 (默认: 1800)")
+    parser.add_argument("-d", "--density", type=float, default=0.1,
+                        help="目标粒子数密度 atoms/A^3 (默认: 0.1)")
     parser.add_argument("-o", "--output", default="product",
                         help="输出目录前缀 (默认: product)")
     parser.add_argument("-f", "--format", default="vasp",
