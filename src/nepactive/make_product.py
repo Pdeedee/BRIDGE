@@ -29,6 +29,8 @@ from scipy.optimize import milp, Bounds
 from ase.io import read, write
 from ase.optimize import LBFGS
 
+PACKMOL_BOX_PADDING = 1.0
+
 # ============================================================
 # 1. 分子定义
 # ============================================================
@@ -294,7 +296,7 @@ def save_solutions_yaml(poscar_path, yaml_path="solutions.yaml", top_k=10):
 
 PACKMOL_HEAD = """
 tolerance 2.0
-add_box_sides 2.0
+add_box_sides {box_padding}
 filetype pdb
 output packmol.pdb
 
@@ -330,6 +332,36 @@ def _write_pdb_files(molecule_dict, work_dir, pdb_dir=None):
                 f.write("END\n")
 
 
+def _load_shortest_distance_threshold(config_path="in.yaml"):
+    if not os.path.exists(config_path):
+        return None
+    with open(config_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    try:
+        threshold = float(data.get("shortest_d", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        print(f"警告: {config_path} 中 shortest_d 无法解析，跳过最短距离检查")
+        return None
+    return threshold if threshold > 0 else None
+
+
+def _warn_shortest_distance(atoms, threshold, label):
+    if threshold is None:
+        return
+    from nepactive.tools import get_shortest_distance
+
+    atom_index = []
+    shortest = float(get_shortest_distance(atoms, atom_index=atom_index))
+    pair = atom_index[0] if atom_index else None
+    if shortest < threshold:
+        print(
+            f"警告: {label} 最短原子距离 {shortest:.4f} A 小于 in.yaml shortest_d={threshold:.4f} A"
+            f"{f', 原子对={pair}' if pair is not None else ''}"
+        )
+    else:
+        print(f"{label} 最短原子距离: {shortest:.4f} A")
+
+
 def run_packmol(molecule_dict, work_dir, density=0.1):
     if density <= 0:
         raise ValueError("density must be positive")
@@ -339,24 +371,35 @@ def run_packmol(molecule_dict, work_dir, density=0.1):
     try:
         atoms_list = {key: read(f"{key}.pdb") for key in molecule_dict}
         total_atoms = sum(molecule_dict[key] * len(atoms_list[key]) for key in molecule_dict)
-        volume = total_atoms / density
-        length = volume ** (1 / 3)
-        print(f"目标粒子数密度: {density:.4f} atoms/A^3, 盒子边长: {length:.2f} A")
+        target_volume = total_atoms / density
+        final_length = target_volume ** (1 / 3)
+        inside_length = final_length - 2 * PACKMOL_BOX_PADDING
+        if inside_length <= 0:
+            raise ValueError(
+                "density is too high for the configured packmol box padding: "
+                f"final length {final_length:.3f} A <= {2 * PACKMOL_BOX_PADDING:.3f} A"
+            )
+        print(
+            f"目标粒子数密度: {density:.4f} atoms/A^3, "
+            f"最终盒子边长: {final_length:.2f} A, packmol内部边长: {inside_length:.2f} A"
+        )
 
         body = "".join(
             PACKMOL_STRUCT.format(
                 pdb_file=f"{k}.pdb", number=v,
-                l1=length, l2=length, l3=length)
+                l1=inside_length, l2=inside_length, l3=inside_length)
             for k, v in molecule_dict.items()
         )
         with open("packmol.inp", 'w') as f:
-            f.write(PACKMOL_HEAD + body)
+            f.write(PACKMOL_HEAD.format(box_padding=PACKMOL_BOX_PADDING) + body)
 
         ret = os.system("packmol < packmol.inp")
         if ret != 0:
             raise RuntimeError("packmol 运行失败，请确认 packmol 在 PATH 中")
 
         atoms = read("packmol.pdb")
+        atoms.set_cell([final_length, final_length, final_length])
+        atoms.set_pbc([True, True, True])
         return atoms
     finally:
         os.chdir(old_dir)
@@ -398,6 +441,7 @@ def make_product(poscar_path, num=1, density=0.1, output_prefix="product",
     if only_solve:
         return
 
+    shortest_d = _load_shortest_distance_threshold()
     ext = "vasp" if output_format == "vasp" else "xyz"
 
     strategies = [
@@ -427,6 +471,7 @@ def make_product(poscar_path, num=1, density=0.1, output_prefix="product",
 
             # 保存优化前结构
             before_name = os.path.join(out_dir, f"before_opt_{idx:03d}.{ext}")
+            _warn_shortest_distance(atoms, shortest_d, before_name)
             write(before_name, atoms)
             print(f"优化前结构: {before_name}")
 
@@ -436,6 +481,7 @@ def make_product(poscar_path, num=1, density=0.1, output_prefix="product",
 
             # 保存优化后结构
             after_name = os.path.join(out_dir, f"after_opt_{idx:03d}.{ext}")
+            _warn_shortest_distance(atoms, shortest_d, after_name)
             write(after_name, atoms)
             print(f"优化后结构: {after_name}")
 

@@ -228,6 +228,11 @@ class BaseRun:
         elastic_modulus = init_cfg.get("elastic_modulus", 15.0)
         pmode = init_cfg.get("pmode", "iso")
         p0 = getattr(self, 'p0', 0)
+        if getattr(self, "pot", None) == "mattersim":
+            real_p0 = self.sdata.get("real_p0", False)
+            if not real_p0:
+                dlog.info(f"real_p0 is {real_p0}, will set p0 to 0")
+                p0 = 0
         temperature_list = _as_list(init_cfg.get("temperature", [3000])) or [3000]
         pressure_list = _as_list(init_cfg.get("pressure", self.pressure_list)) or list(self.pressure_list)
         ensembles = self._resolve_init_ase_ensembles()
