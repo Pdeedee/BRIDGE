@@ -3,16 +3,308 @@
 计算优化后结构的能量与初始能量的差值
 """
 
+from __future__ import annotations
+
 import os
 import subprocess
 import numpy as np
+import csv
+import time
+import sys
+from glob import glob
 from ase.io import read, write
 from ase import units
 from nepactive import dlog
 
 
+def _normalize_gpu_ids(gpu_ids=None, gpu_id: int = 0) -> list[int]:
+    if gpu_ids is None:
+        return [int(gpu_id)]
+    if isinstance(gpu_ids, (int, str)):
+        return [int(gpu_ids)]
+    gpu_list = []
+    for gpu in gpu_ids:
+        gpu = int(gpu)
+        if gpu not in gpu_list:
+            gpu_list.append(gpu)
+    return gpu_list or [int(gpu_id)]
+
+
+def _numeric_task_index(task_dir: str) -> int | None:
+    name = os.path.basename(task_dir)
+    parts = name.split(".")
+    if len(parts) == 2 and parts[0] == "task" and parts[1].isdigit():
+        return int(parts[1])
+    return None
+
+
+def _collect_final_task_structures(work_dir: str) -> list[dict]:
+    task_dirs = glob(os.path.join(work_dir, "struc.*", "task.*"))
+    records = []
+    for task_dir in sorted(task_dirs):
+        task_idx = _numeric_task_index(task_dir)
+        if task_idx is None:
+            continue
+        final_xyz = os.path.join(task_dir, "final.xyz")
+        if not os.path.exists(final_xyz):
+            continue
+        struc_name = os.path.basename(os.path.dirname(task_dir))
+        records.append({
+            "struc": struc_name,
+            "task": os.path.basename(task_dir),
+            "task_index": task_idx,
+            "task_dir": os.path.abspath(task_dir),
+            "structure": os.path.abspath(final_xyz),
+        })
+    return records
+
+
+def _optimize_atoms_energy(work_dir: str, atoms, label: str, gpu_id: int = 0,
+                           job_system: dict = None) -> float:
+    """Optimize one structure with MatterSim + LBFGS + UnitCellFilter."""
+    work_dir = os.path.abspath(work_dir)
+    qrelease_dir = os.path.join(work_dir, "Qrelease")
+    os.makedirs(qrelease_dir, exist_ok=True)
+
+    marker_file = f"{label}_task_finished"
+    input_file = f"{label}_input.xyz"
+    output_file = f"{label}_opt.xyz"
+    energy_file = f"{label}_energy.txt"
+    log_file = f"{label}_opt.log"
+
+    original_cwd = os.getcwd()
+    os.chdir(qrelease_dir)
+
+    try:
+        if os.path.exists(marker_file) and os.path.exists(energy_file):
+            dlog.info(f"{label} optimization already completed, reading results")
+            return float(np.loadtxt(energy_file))
+
+        write(input_file, atoms)
+        dlog.info(f"Running MatterSim LBFGS optimization for {label} on GPU {gpu_id}...")
+
+        if job_system and job_system.get("mode") == "local":
+            from nepactive.scheduler import create_scheduler, JobManager
+
+            opt_script = f"""#!/usr/bin/env python3
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '{gpu_id}'
+
+from ase.io import read, write
+from mattersim.forcefield import MatterSimCalculator
+from ase.optimize import LBFGS
+from ase.filters import UnitCellFilter
+import numpy as np
+
+atoms = read('{input_file}')
+calc = MatterSimCalculator(device='cuda')
+atoms.calc = calc
+ucf = UnitCellFilter(atoms)
+opt = LBFGS(ucf, logfile='{log_file}')
+opt.run(fmax=0.02, steps=1000)
+energy = atoms.get_potential_energy()
+write('{output_file}', atoms)
+np.savetxt('{energy_file}', [energy])
+print(f'{label} optimized energy: {{energy:.6f}} eV')
+"""
+
+            script_file = f"optimize_{label}.py"
+            with open(script_file, "w") as f:
+                f.write(opt_script)
+
+            scheduler_config = job_system.copy()
+            scheduler_config["header"] = job_system.get("gpu_header", "")
+            scheduler = create_scheduler(scheduler_config)
+            job_manager = JobManager(scheduler)
+
+            commands = [
+                f"cd {qrelease_dir}",
+                f"export CUDA_VISIBLE_DEVICES={gpu_id}",
+                f"python {script_file}",
+            ]
+            job_script = os.path.join(qrelease_dir, f"job_hod_{label}.sh")
+            scheduler.write_script(job_script, commands, qrelease_dir)
+
+            job_id = job_manager.submit(job_script, qrelease_dir, f"hod_{label}_optimization")
+            dlog.info(f"Submitted HOD {label} optimization job: {job_id}")
+            job_manager.wait_for_jobs([job_id], check_interval=job_system.get("check_interval", 30))
+
+            if not os.path.exists(energy_file):
+                raise RuntimeError(f"MatterSim {label} optimization failed. Check log: {qrelease_dir}/log")
+
+        else:
+            os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
+
+            from mattersim.forcefield import MatterSimCalculator
+            from ase.optimize import LBFGS
+            from ase.filters import UnitCellFilter
+
+            calc = MatterSimCalculator(device='cuda')
+            atoms.calc = calc
+            ucf = UnitCellFilter(atoms)
+            opt = LBFGS(ucf, logfile=log_file)
+            opt.run(fmax=0.02, steps=1000)
+            energy = atoms.get_potential_energy()
+            write(output_file, atoms)
+            np.savetxt(energy_file, [energy])
+
+        energy = float(np.loadtxt(energy_file))
+        os.system(f"touch {marker_file}")
+        dlog.info(f"{label} optimized energy: {energy:.6f} eV")
+        return energy
+
+    finally:
+        os.chdir(original_cwd)
+
+
+def _optimize_structure_worker(qrelease_dir: str, structure_path: str, label: str,
+                               gpu_id: int, job_system: dict = None) -> float:
+    atoms = read(structure_path)
+    return _optimize_atoms_energy(qrelease_dir, atoms, label, gpu_id, job_system)
+
+
+def _optimize_final_tasks_local(work_dir: str, task_records: list[dict],
+                                gpu_ids: list[int], job_system: dict = None) -> list[dict]:
+    qrelease_dir = os.path.join(work_dir, "Qrelease")
+    os.makedirs(qrelease_dir, exist_ok=True)
+
+    pending = []
+    results = []
+    for record in task_records:
+        label = f"final_{record['struc']}_{record['task']}"
+        record = record.copy()
+        record["label"] = label
+        record["energy_file"] = os.path.join(qrelease_dir, f"{label}_energy.txt")
+        record["opt_structure"] = os.path.join(qrelease_dir, f"{label}_opt.xyz")
+        if os.path.exists(record["energy_file"]):
+            record["energy"] = float(np.loadtxt(record["energy_file"]))
+            record["cached"] = True
+            results.append(record)
+        else:
+            pending.append(record)
+
+    running = []
+    pending_index = 0
+    original_cwd = os.getcwd()
+    try:
+        while pending_index < len(pending) or running:
+            while pending_index < len(pending) and len(running) < len(gpu_ids):
+                record = pending[pending_index]
+                busy_gpus = {item["gpu_id"] for item in running}
+                gpu_id = next(gpu for gpu in gpu_ids if gpu not in busy_gpus)
+                pending_index += 1
+                log_path = os.path.join(qrelease_dir, f"{record['label']}_worker.log")
+                script = f"""import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '{gpu_id}'
+from ase.io import read, write
+from mattersim.forcefield import MatterSimCalculator
+from ase.optimize import LBFGS
+from ase.filters import UnitCellFilter
+import numpy as np
+
+atoms = read(r'''{record['structure']}''')
+atoms.calc = MatterSimCalculator(device='cuda')
+ucf = UnitCellFilter(atoms)
+opt = LBFGS(ucf, logfile=r'''{os.path.join(qrelease_dir, record['label'] + '_opt.log')}''')
+converged = bool(opt.run(fmax=0.02, steps=1000))
+energy = float(atoms.get_potential_energy())
+write(r'''{record['opt_structure']}''', atoms)
+np.savetxt(r'''{record['energy_file']}''', [energy])
+with open(r'''{os.path.join(qrelease_dir, record['label'] + '_converged.txt')}''', 'w') as f:
+    f.write(str(converged) + '\\n')
+print(f"{record['label']} {{energy:.12f}}")
+"""
+                env = os.environ.copy()
+                env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+                with open(log_path, "w") as log:
+                    process = subprocess.Popen(
+                        [sys.executable, "-c", script],
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        cwd=qrelease_dir,
+                        env=env,
+                    )
+                running.append({"process": process, "record": record, "gpu_id": gpu_id, "log_path": log_path})
+                dlog.info(
+                    f"Started HOD final optimization {record['struc']}/{record['task']} "
+                    f"on GPU {gpu_id}"
+                )
+
+            if not running:
+                continue
+            time.sleep(5)
+            still_running = []
+            for item in running:
+                process = item["process"]
+                if process.poll() is None:
+                    still_running.append(item)
+                    continue
+                record = item["record"]
+                if process.returncode != 0:
+                    raise RuntimeError(
+                        f"HOD final optimization failed for {record['task_dir']}; "
+                        f"check log: {item['log_path']}"
+                    )
+                record["energy"] = float(np.loadtxt(record["energy_file"]))
+                record["cached"] = False
+                results.append(record)
+                dlog.info(
+                    f"Finished HOD final optimization {record['struc']}/{record['task']}: "
+                    f"{record['energy']:.6f} eV"
+                )
+            running = still_running
+    finally:
+        os.chdir(original_cwd)
+
+    results.sort(key=lambda item: (item["struc"], item["task_index"]))
+    return results
+
+
+def _write_final_task_summary(work_dir: str, results: list[dict]) -> None:
+    qrelease_dir = os.path.join(work_dir, "Qrelease")
+    summary_file = os.path.join(qrelease_dir, "final_task_energies.csv")
+    fieldnames = [
+        "struc", "task", "task_index", "energy_eV", "cached",
+        "task_dir", "input_structure", "opt_structure",
+    ]
+    with open(summary_file, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for item in sorted(results, key=lambda row: row["energy"]):
+            writer.writerow({
+                "struc": item["struc"],
+                "task": item["task"],
+                "task_index": item["task_index"],
+                "energy_eV": f"{item['energy']:.12f}",
+                "cached": item.get("cached", False),
+                "task_dir": item["task_dir"],
+                "input_structure": item["structure"],
+                "opt_structure": item["opt_structure"],
+            })
+
+
+def _read_final_structure(work_dir: str):
+    final_xyz_path = os.path.join(work_dir, "struc.000", "task.000", "final.xyz")
+    if os.path.exists(final_xyz_path):
+        dlog.info(f"Using final structure: {final_xyz_path}")
+        return read(final_xyz_path)
+
+    poscar_path = os.path.join(work_dir, "POSCAR")
+    dlog.warning(f"final.xyz not found, using POSCAR: {poscar_path}")
+    return read(poscar_path)
+
+
+def calculate_optimized_initial_energy(work_dir: str, gpu_id: int = 0,
+                                       job_system: dict = None) -> float:
+    """Optimize the initial POSCAR and return its MatterSim potential energy."""
+    work_dir = os.path.abspath(work_dir)
+    atoms = read(os.path.join(work_dir, "POSCAR"))
+    return _optimize_atoms_energy(work_dir, atoms, "initial", gpu_id, job_system)
+
+
 def calculate_optimized_energy(work_dir: str, nep_path: str = None, gpu_id: int = 0,
-                               job_system: dict = None, pot_file: str = None) -> float:
+                               job_system: dict = None, pot_file: str = None,
+                               gpu_ids=None) -> float:
     """
     计算优化后结构的能量（使用 MatterSim + LBFGS 优化）
 
@@ -26,121 +318,35 @@ def calculate_optimized_energy(work_dir: str, nep_path: str = None, gpu_id: int 
     Returns:
         energy: 优化后的能量
     """
-    qrelease_dir = os.path.join(work_dir, "Qrelease")
-    os.makedirs(qrelease_dir, exist_ok=True)
-
-    original_cwd = os.getcwd()
-    os.chdir(qrelease_dir)
-
-    try:
-        if os.path.exists("task_finished"):
-            dlog.info("Energy optimization already completed, reading results")
-            energy = np.loadtxt("energy.txt")
-            return energy
-
-        # 准备结构文件 - 使用训练后的 final.xyz
-        # 优先使用 struc.000/task.000/final.xyz，如果不存在则使用 POSCAR
-        final_xyz_path = os.path.join(work_dir, "struc.000", "task.000", "final.xyz")
-        if os.path.exists(final_xyz_path):
-            dlog.info(f"Using final structure: {final_xyz_path}")
-            atoms = read(final_xyz_path)
-        else:
-            poscar_path = os.path.join(work_dir, "POSCAR")
-            dlog.warning(f"final.xyz not found, using POSCAR: {poscar_path}")
-            atoms = read(poscar_path)
-
-        # 运行 MatterSim 优化
-        dlog.info(f"Running MatterSim LBFGS optimization on GPU {gpu_id}...")
-
+    work_dir = os.path.abspath(work_dir)
+    gpu_ids = _normalize_gpu_ids(gpu_ids, gpu_id)
+    task_records = _collect_final_task_structures(work_dir)
+    if task_records:
         if job_system and job_system.get("mode") == "local":
-            # 使用作业提交系统
-            from nepactive.scheduler import create_scheduler, JobManager
+            dlog.warning(
+                "Parallel final-task HOD currently runs locally; job_system is ignored for final-task fanout."
+            )
+        results = _optimize_final_tasks_local(work_dir, task_records, gpu_ids, None)
+        _write_final_task_summary(work_dir, results)
+        best = min(results, key=lambda item: item["energy"])
+        best_file = os.path.join(work_dir, "Qrelease", "best_final_task.txt")
+        with open(best_file, "w") as f:
+            f.write(
+                f"{best['struc']}/{best['task']} {best['energy']:.12f} "
+                f"{best['opt_structure']}\n"
+            )
+        dlog.info(
+            f"Best optimized final task: {best['struc']}/{best['task']} "
+            f"E={best['energy']:.6f} eV"
+        )
+        return float(best["energy"])
 
-            # 创建优化脚本
-            opt_script = f"""#!/usr/bin/env python3
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '{gpu_id}'
-
-from ase.io import read, write
-from mattersim.forcefield import MatterSimCalculator
-from ase.optimize import LBFGS
-from ase.filters import UnitCellFilter
-import numpy as np
-
-atoms = read('POSCAR')
-calc = MatterSimCalculator(device='cuda')
-atoms.calc = calc
-ucf = UnitCellFilter(atoms)
-opt = LBFGS(ucf, logfile='opt.log')
-opt.run(fmax=0.02, steps=1000)
-energy = atoms.get_potential_energy()
-write('optfinal.xyz', atoms)
-np.savetxt('energy.txt', [energy])
-print(f'Optimized energy: {{energy:.6f}} eV')
-"""
-
-            with open("optimize.py", "w") as f:
-                f.write(opt_script)
-
-            # 写入 POSCAR
-            write("POSCAR", atoms)
-
-            # 提交作业
-            scheduler_config = job_system.copy()
-            scheduler_config["header"] = job_system.get("gpu_header", "")
-            scheduler = create_scheduler(scheduler_config)
-            job_manager = JobManager(scheduler)
-
-            commands = [
-                f"cd {qrelease_dir}",
-                f"export CUDA_VISIBLE_DEVICES={gpu_id}",
-                "python optimize.py"
-            ]
-            job_script = os.path.join(qrelease_dir, "job_hod.sh")
-            scheduler.write_script(job_script, commands, qrelease_dir)
-
-            job_id = job_manager.submit(job_script, qrelease_dir, "hod_optimization")
-            dlog.info(f"Submitted HOD optimization job: {job_id}")
-            job_manager.wait_for_jobs([job_id], check_interval=job_system.get("check_interval", 30))
-
-            if not os.path.exists("energy.txt"):
-                raise RuntimeError(f"MatterSim optimization failed. Check log: {qrelease_dir}/log")
-
-        else:
-            # 直接执行
-            from mattersim.forcefield import MatterSimCalculator
-            from ase.optimize import LBFGS
-            from ase.filters import UnitCellFilter
-
-            env = os.environ.copy()
-            env['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-            os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_id)
-
-            calc = MatterSimCalculator(device='cuda')
-            atoms.calc = calc
-            ucf = UnitCellFilter(atoms)
-            opt = LBFGS(ucf, logfile='opt.log')
-            opt.run(fmax=0.02, steps=1000)
-            energy = atoms.get_potential_energy()
-            write("optfinal.xyz", atoms)
-            np.savetxt("energy.txt", [energy])
-
-        # 读取优化后的能量
-        energy = np.loadtxt("energy.txt")
-
-        # 创建完成标记
-        os.system("touch task_finished")
-
-        dlog.info(f"Optimized energy: {energy:.6f} eV")
-
-        return energy
-
-    finally:
-        os.chdir(original_cwd)
+    atoms = _read_final_structure(work_dir)
+    return _optimize_atoms_energy(work_dir, atoms, "final", gpu_ids[0], job_system)
 
 
 def calculate_heat_of_detonation(work_dir: str, nep_path: str, gpu_id: int = 0,
-                                 job_system: dict = None) -> float:
+                                 job_system: dict = None, gpu_ids=None) -> float:
     """
     计算爆热：Q = E_initial - E_optimized
 
@@ -156,6 +362,7 @@ def calculate_heat_of_detonation(work_dir: str, nep_path: str, gpu_id: int = 0,
     original_dir = os.getcwd()
 
     try:
+        work_dir = os.path.abspath(work_dir)
         os.chdir(work_dir)
 
         # 读取初始能量
@@ -166,8 +373,10 @@ def calculate_heat_of_detonation(work_dir: str, nep_path: str, gpu_id: int = 0,
         rho, e0, p0, v0, nat = np.loadtxt(properties_file)
         dlog.info(f"Initial energy (from properties.txt): {e0:.6f} eV, atoms: {int(nat)}")
 
-        # 计算优化后的能量
-        ef = calculate_optimized_energy(work_dir, nep_path, gpu_id, job_system)
+        # 初态和末态都使用 MatterSim + LBFGS + UnitCellFilter 优化后的势能。
+        gpu_ids = _normalize_gpu_ids(gpu_ids, gpu_id)
+        pe0 = calculate_optimized_initial_energy(work_dir, gpu_ids[0], job_system)
+        ef = calculate_optimized_energy(work_dir, nep_path, gpu_ids[0], job_system, gpu_ids=gpu_ids)
 
         # 读取结构获取质量和初始势能
         final_xyz_path = os.path.join(work_dir, "struc.000", "task.000", "final.xyz")
@@ -179,13 +388,7 @@ def calculate_heat_of_detonation(work_dir: str, nep_path: str, gpu_id: int = 0,
 
         mass = atoms.get_masses().sum() / units.kg  # kg
 
-        # 计算初始势能（用同一个 calculator 重新算，排除 NVT 动能影响）
-        from mattersim.forcefield import MatterSimCalculator
-        calc = MatterSimCalculator(device='cuda')
-        init_atoms = read(os.path.join(work_dir, "POSCAR"))
-        init_atoms.calc = calc
-        pe0 = init_atoms.get_potential_energy()
-        dlog.info(f"Initial potential energy (recalculated): {pe0:.6f} eV")
+        dlog.info(f"Initial energy (optimized): {pe0:.6f} eV")
 
         # Q_pe: 纯势能差
         Q_pe = pe0 - ef
@@ -205,8 +408,8 @@ def calculate_heat_of_detonation(work_dir: str, nep_path: str, gpu_id: int = 0,
         with open(q_release_file, "w") as f:
             f.write(f"# Heat of Detonation\n")
             f.write(f"# E0 (properties.txt): {e0:.6f} eV\n")
-            f.write(f"# PE0 (potential energy): {pe0:.6f} eV\n")
-            f.write(f"# Ef (optimized): {ef:.6f} eV\n")
+            f.write(f"# PE0 (optimized potential energy): {pe0:.6f} eV\n")
+            f.write(f"# Ef (lowest optimized final task): {ef:.6f} eV\n")
             f.write(f"# Q_pe  (eV): {Q_pe:.6f}\n")
             f.write(f"# Q_pe  (kJ/kg): {Q_pe_per_kg:.2f}\n")
             f.write(f"# Q_total (eV): {Q_total:.6f}\n")
@@ -221,7 +424,8 @@ def calculate_heat_of_detonation(work_dir: str, nep_path: str, gpu_id: int = 0,
 
 
 def batch_calculate_heat_of_detonation(base_dir: str, pattern: str = "iter.*/03.shock",
-                                       gpu_id: int = 0, job_system: dict = None):
+                                       gpu_id: int = 0, job_system: dict = None,
+                                       gpu_ids=None):
     """
     批量计算爆热（用于命令行工具）
 
@@ -262,7 +466,13 @@ def batch_calculate_heat_of_detonation(base_dir: str, pattern: str = "iter.*/03.
             continue
 
         try:
-            Q_release = calculate_heat_of_detonation(shock_dir, nep_path, gpu_id, job_system)
+            Q_release = calculate_heat_of_detonation(
+                shock_dir,
+                nep_path,
+                gpu_id,
+                job_system,
+                gpu_ids=gpu_ids,
+            )
             results.append({
                 'dir': shock_dir,
                 'Q_release': Q_release,

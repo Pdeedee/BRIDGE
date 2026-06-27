@@ -135,9 +135,16 @@ def main():
             return
         from nepactive.hod import calculate_heat_of_detonation
         job_system = idata.get("job_system", None)
+        gpu_available = idata.get("gpu_available", [args.gpu])
         try:
-            Q_release = calculate_heat_of_detonation(latest_shock_dir, nep_path, args.gpu, job_system)
-            dlog.info(f"Heat of detonation: {Q_release:.2f} kJ/mol")
+            Q_release = calculate_heat_of_detonation(
+                latest_shock_dir,
+                nep_path,
+                gpu_available[0] if gpu_available else args.gpu,
+                job_system,
+                gpu_ids=gpu_available,
+            )
+            dlog.info(f"Heat of detonation: {Q_release:.2f} kJ/kg")
         except Exception as e:
             dlog.error(f"Failed to calculate heat of detonation: {e}")
             import traceback

@@ -1296,9 +1296,16 @@ class Nepactive(object):
         from nepactive.hod import calculate_heat_of_detonation
         dlog.info("Calculating heat of detonation...")
         try:
-            gpu_id = shock_data["gpu_available"][0] if shock_data["gpu_available"] else 0
+            gpu_available = shock_data.get("gpu_available", [0])
+            gpu_id = gpu_available[0] if gpu_available else 0
             job_system = self.idata.get("job_system", None)
-            Q_release = calculate_heat_of_detonation(work_dir, nep_file, gpu_id, job_system)
+            Q_release = calculate_heat_of_detonation(
+                work_dir,
+                nep_file,
+                gpu_id,
+                job_system,
+                gpu_ids=gpu_available,
+            )
             dlog.info(f"Heat of detonation: {Q_release:.2f} kJ/kg")
         except Exception as e:
             dlog.error(f"Failed to calculate heat of detonation: {e}")
