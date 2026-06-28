@@ -8,6 +8,7 @@ import shutil
 from collections import Counter
 from nepactive.packmol import make_structure
 from glob import glob
+from math import ceil
 import subprocess
 import re
 from nepactive import dlog
@@ -223,6 +224,16 @@ class BaseRun:
         time_step_list = _as_list(init_cfg.get("time_step", 0.2)) or [0.2]
         self.total_time = max(float(steps) * float(time_step) for time_step in time_step_list)
         dump_freq = init_cfg.get("dump_freq", 100)
+        if getattr(self, "pot", None) == "mattersim":
+            target_frames = 2000
+            balanced_dump_freq = max(1, int(ceil(float(steps) / target_frames)))
+            old_dump_freq = int(dump_freq)
+            dump_freq = max(old_dump_freq, balanced_dump_freq)
+            if dump_freq != old_dump_freq:
+                dlog.info(
+                    f"mattersim shock dump_freq adjusted from {old_dump_freq} to {dump_freq} "
+                    f"to keep trajectory around {target_frames} frames"
+                )
         tau_t = init_cfg.get("tau_t", 100)
         tau_p = init_cfg.get("tau_p", 2000)
         elastic_modulus = init_cfg.get("elastic_modulus", 15.0)
