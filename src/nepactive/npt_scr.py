@@ -752,6 +752,51 @@ class NPH_SCR_Hugo(NPH_SCR):
 
 
 # ============================================================
+# NVHugo_SCR: fixed-volume BDP thermostat + Hugoniot target
+# ============================================================
+
+class NVHugo_SCR(NPT_SCR):
+    """
+    Fixed-volume Hugoniot thermostat using the BDP thermostat from NPT_SCR.
+    The cell is kept fixed; the target temperature follows the Hugoniot relation.
+    """
+
+    def __init__(self, atoms, timestep,
+                 e0=None, p0=None, v0=None,
+                 tau_t=100.0,
+                 pmode='iso', **kwargs):
+        self._pmode_hugo = pmode.lower()
+        self.v0 = v0 if v0 is not None else atoms.get_volume()
+        self.e0 = e0 if e0 is not None else atoms.get_total_energy()
+        if p0 is None:
+            self.p0 = -atoms.get_stress(voigt=False).trace() / 3.0
+        else:
+            self.p0 = p0 * units.GPa
+        self.tdof = 3 * len(atoms)
+        self.dhugo = 0.0
+
+        t_init = max(300.0, atoms.get_temperature()
+                     + _compute_hugoniot(atoms, self.e0, self.p0, self.v0,
+                                         self._pmode_hugo))
+        super().__init__(
+            atoms=atoms, timestep=timestep, temperature=t_init,
+            pressure=0.0, tau_t=tau_t, pmode=None, **kwargs)
+
+        print(f"NVHugo_SCR: e0={self.e0:.4f} eV, v0={self.v0:.2f} A^3, "
+              f"p0={self.p0 / units.GPa:.4f} GPa, pmode={self._pmode_hugo}, "
+              f"tau_t={tau_t}")
+
+    def _apply_thermostat(self):
+        self.dhugo = _compute_hugoniot(
+            self.atoms, self.e0, self.p0, self.v0, self._pmode_hugo)
+        self.temp_target = max(300.0, self.atoms.get_temperature() + self.dhugo)
+        super()._apply_thermostat()
+
+    def get_hugoniot_deviation(self):
+        return self.dhugo
+
+
+# ============================================================
 # Convenience factory
 # ============================================================
 

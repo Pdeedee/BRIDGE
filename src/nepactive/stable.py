@@ -21,7 +21,7 @@ from ase.build import make_supercell
 from nepactive.template import (build_gpumd_nphug_ensemble_line, gpumd_cell_is_triclinic,
                                  nvt_pytemplate, nphugo_mttk_pytemplate, nphugo_mttk_template,
                                  shock_test_template, npt_pytemplate, nphugo_scr_pytemplate,
-                                 npt_scr_pytemplate)
+                                 npt_scr_pytemplate, nvhug_scr_pytemplate)
 from nepactive.plt import ase_plt, gpumdplt
 from nepactive.tools import shock_calculate, run_gpumd_task, run_py_tasks, compute_volume_from_thermo
 from ase.io.extxyz import write_extxyz
@@ -238,6 +238,8 @@ class BaseRun:
         tau_p = init_cfg.get("tau_p", 2000)
         elastic_modulus = init_cfg.get("elastic_modulus", 15.0)
         pmode = init_cfg.get("pmode", "iso")
+        rel_volume_list = _as_list(init_cfg.get("rel_volume", [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]))
+        ramp_steps = int(init_cfg.get("ramp_steps", max(1, int(steps) // 2)))
         p0 = getattr(self, 'p0', 0)
         if getattr(self, "pot", None) == "mattersim":
             real_p0 = self.sdata.get("real_p0", False)
@@ -251,73 +253,96 @@ class BaseRun:
         dlog.info(f"Using ASE {run_label} ensembles: {ensembles}")
         task_index = 0
         for ensemble in ensembles:
-            active_pressures = [None] if ensemble == "nvt" else pressure_list
+            active_pressures = [None] if ensemble in {"nvt", "nvhug_scr"} else pressure_list
+            active_rel_volumes = rel_volume_list if ensemble == "nvhug_scr" else [None]
             for temperature in temperature_list:
                 for pressure in active_pressures:
-                    for time_step in time_step_list:
-                        time_step_value = _as_scalar_float(time_step, "init.time_step")
-                        os.chdir(work_dir)
-                        task_dir = os.path.join(work_dir, f"task.{task_index:03d}")
-                        os.makedirs(task_dir, exist_ok=True)
-                        os.chdir(task_dir)
-                        task_index += 1
-                        # 优先使用 POSCAR，兼容旧版 stable.pdb
-                        struc_file = "../structure/POSCAR" if os.path.exists("../structure/POSCAR") else "../structure/stable.pdb"
-                        if ensemble == "nvt":
-                            py_file = nvt_pytemplate.format(
-                                structure=struc_file,
-                                temperature=temperature,
-                                steps=steps,
-                                time_step=time_step_value,
-                                dump_freq=dump_freq,
-                                **self._ase_template_kwargs(),
-                            )
-                        elif ensemble == "npt":
-                            py_file = npt_pytemplate.format(
-                                structure=struc_file,
-                                temperature=temperature,
-                                pressure=pressure,
-                                steps=steps,
-                                time_step=time_step_value,
-                                dump_freq=dump_freq,
-                                **self._ase_template_kwargs(),
-                            )
-                        elif ensemble == "npt_scr":
-                            py_file = npt_scr_pytemplate.format(
-                                structure=struc_file,
-                                temperature=temperature,
-                                pressure=pressure,
-                                steps=steps,
-                                dump_freq=dump_freq,
-                                time_step=time_step_value,
-                                tau_t=tau_t,
-                                tau_p=tau_p,
-                                elastic_modulus=elastic_modulus,
-                                pmode=pmode,
-                                **self._ase_template_kwargs(),
-                            )
-                        elif ensemble in {"nphugo_scr", "nphugo_mttk", "nphugo"}:
-                            py_file = nphugo_scr_pytemplate.format(
-                                structure=struc_file,
-                                e0=self.energy,
-                                p0=p0,
-                                v0=self.r_v,
-                                dump_freq=dump_freq,
-                                pressure=pressure,
-                                steps=steps,
-                                time_step=time_step_value,
-                                tau_t=tau_t,
-                                tau_p=tau_p,
-                                pmode=pmode,
-                                **self._ase_template_kwargs(),
-                            )
-                        else:
-                            raise ValueError(
-                                f"Unsupported ASE init ensemble: {ensemble}. "
-                                "Supported values are nvt, npt, npt_scr, nphugo_scr, nphugo_mttk."
-                            )
-                        with open("ensemble.py", "w", encoding='utf-8') as f:
-                            f.write(py_file)
+                    if ensemble == "nvhug_scr":
+                        pressure_iter = [None]
+                    else:
+                        pressure_iter = [pressure]
+                    for pressure_value in pressure_iter:
+                        for rel_volume in active_rel_volumes:
+                            for time_step in time_step_list:
+                                time_step_value = _as_scalar_float(time_step, "init.time_step")
+                                os.chdir(work_dir)
+                                task_dir = os.path.join(work_dir, f"task.{task_index:03d}")
+                                os.makedirs(task_dir, exist_ok=True)
+                                os.chdir(task_dir)
+                                task_index += 1
+                                # 优先使用 POSCAR，兼容旧版 stable.pdb
+                                struc_file = "../structure/POSCAR" if os.path.exists("../structure/POSCAR") else "../structure/stable.pdb"
+                                if ensemble == "nvt":
+                                    py_file = nvt_pytemplate.format(
+                                        structure=struc_file,
+                                        temperature=temperature,
+                                        steps=steps,
+                                        time_step=time_step_value,
+                                        dump_freq=dump_freq,
+                                        **self._ase_template_kwargs(),
+                                    )
+                                elif ensemble == "npt":
+                                    py_file = npt_pytemplate.format(
+                                        structure=struc_file,
+                                        temperature=temperature,
+                                        pressure=pressure_value,
+                                        steps=steps,
+                                        time_step=time_step_value,
+                                        dump_freq=dump_freq,
+                                        **self._ase_template_kwargs(),
+                                    )
+                                elif ensemble == "npt_scr":
+                                    py_file = npt_scr_pytemplate.format(
+                                        structure=struc_file,
+                                        temperature=temperature,
+                                        pressure=pressure_value,
+                                        steps=steps,
+                                        dump_freq=dump_freq,
+                                        time_step=time_step_value,
+                                        tau_t=tau_t,
+                                        tau_p=tau_p,
+                                        elastic_modulus=elastic_modulus,
+                                        pmode=pmode,
+                                        **self._ase_template_kwargs(),
+                                    )
+                                elif ensemble in {"nphugo_scr", "nphugo_mttk", "nphugo"}:
+                                    py_file = nphugo_scr_pytemplate.format(
+                                        structure=struc_file,
+                                        e0=self.energy,
+                                        p0=p0,
+                                        v0=self.r_v,
+                                        dump_freq=dump_freq,
+                                        pressure=pressure_value,
+                                        steps=steps,
+                                        time_step=time_step_value,
+                                        tau_t=tau_t,
+                                        tau_p=tau_p,
+                                        pmode=pmode,
+                                        **self._ase_template_kwargs(),
+                                    )
+                                elif ensemble == "nvhug_scr":
+                                    py_file = nvhug_scr_pytemplate.format(
+                                        structure=struc_file,
+                                        temperature=temperature,
+                                        e0=self.energy,
+                                        p0=p0,
+                                        v0=self.r_v,
+                                        rel_volume=float(rel_volume),
+                                        ramp_steps=ramp_steps,
+                                        dump_freq=dump_freq,
+                                        steps=steps,
+                                        time_step=time_step_value,
+                                        tau_t=tau_t,
+                                        pmode=pmode,
+                                        **self._ase_template_kwargs(),
+                                    )
+                                else:
+                                    raise ValueError(
+                                        f"Unsupported ASE init ensemble: {ensemble}. "
+                                        "Supported values are nvt, npt, npt_scr, nphugo_scr, nphugo_mttk, nvhug_scr."
+                                    )
+                                with open("ensemble.py", "w", encoding='utf-8') as f:
+                                    f.write(py_file)
 
     def _resolve_init_ase_ensembles(self) -> list[str]:
         init_cfg = self._resolve_init_md_config()
@@ -326,6 +351,7 @@ class BaseRun:
             "nphugo": "nphugo_scr",
             "nphugo_scr": "nphugo_scr",
             "nphugo_mttk": "nphugo_mttk",
+            "nvhug_scr": "nvhug_scr",
             "npt": "npt",
             "npt_scr": "npt_scr",
             "nvt": "nvt",
@@ -535,6 +561,7 @@ class ShockRun(BaseRun):
             "nphugo": "nphugo_scr",
             "nphugo_scr": "nphugo_scr",
             "nphugo_mttk": "nphugo_mttk",
+            "nvhug_scr": "nvhug_scr",
         }
         resolved: list[str] = []
         for ensemble in ensembles:
@@ -688,14 +715,20 @@ class ShockRun(BaseRun):
         dlog.info("saved thermo.txt")
 
         thermos = np.loadtxt("thermo.txt", encoding="utf-8")
+        init_cfg = self._resolve_init_md_config()
+        ensembles = self._resolve_init_ase_ensembles()
+        if ensembles == ["nvhug_scr"]:
+            branch_count = len(_as_list(init_cfg.get("rel_volume", [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95])))
+        else:
+            branch_count = len(self.pressure_list)
         shock_vels = []
         struc_dir = glob("struc.*")
         struc_dir = [os.path.abspath(s) for s in struc_dir]
         struc_dir.sort()
         for ii, struc in enumerate(struc_dir):
             os.chdir(struc)
-            start_index = ii * len(self.pressure_list)
-            thermo_branch = thermos[start_index:start_index + len(self.pressure_list), :]
+            start_index = ii * branch_count
+            thermo_branch = thermos[start_index:start_index + branch_count, :]
             volume = thermo_branch[:, 5]
             pressure = np.mean(thermo_branch[:, 6:9], axis=1)
             shock_vel = shock_calculate(volume=volume, pressure=pressure, v0=self.r_v, rho=self.r_rho)
