@@ -602,24 +602,22 @@ dyn.run(steps)
 """
 
 nvhug_scr_pytemplate = """
-# NVHug with fixed-volume Hugoniot thermostat.
-# First ramp volume with NVT-SCR, then run fixed-volume Hugoniot dynamics.
+# NVHugo_SCR: NVT-SCR volume ramp followed by fixed-volume Hugoniot dynamics.
 from ase.io import read, write
 from nepactive.logger import MDLogger
 from ase import units
 from ase.md.velocitydistribution import MaxwellBoltzmannDistribution, Stationary, ZeroRotation
 from ase.io.trajectory import Trajectory
 from ase.optimize import LBFGS
-from nepactive.npt_scr import NPT_SCR, NVHugo_SCR
+from nepactive.npt_scr import NVHugo_SCR
 from nepactive.nep_backend import create_ase_calculator
 calculator = create_ase_calculator(model_name={ase_model_name}, model_file={ase_model_file}, device="cuda", nep_backend={ase_nep_backend})
 atoms = read("{structure}")
 atoms.calc = calculator
 opt = LBFGS(atoms, trajectory='opt.traj')
 opt.run(fmax=0.05, steps=40)
-total_steps = {steps}
 ramp_steps = {ramp_steps}
-hug_steps = max(1, total_steps - ramp_steps)
+hug_steps = {hug_steps}
 write("opt.pdb", atoms)
 temperature_K = {temperature}
 MaxwellBoltzmannDistribution(atoms, temperature_K=temperature_K)
@@ -631,25 +629,23 @@ e0 = {e0}
 p0 = {p0}
 v0 = {v0}
 rel_volume = {rel_volume}
-dyn = NPT_SCR(atoms, timestep=timestep,
-              temperature=temperature_K, pressure=0,
-              run_steps=ramp_steps,
-              v_start=1.0, v_stop=rel_volume,
-              pmode=None,
-              tau_t={tau_t})
+dyn = NVHugo_SCR(
+    atoms,
+    timestep=timestep,
+    temperature=temperature_K,
+    rel_volume=rel_volume,
+    ramp_steps=ramp_steps,
+    hug_steps=hug_steps,
+    e0=e0,
+    p0=p0,
+    v0=v0,
+    tau_t={tau_t},
+    pmode="{pmode}",
+)
 dyn.attach(MDLogger(dyn, atoms, 'md.log', header=True, stress=True,
         volume=True, mode="w"), interval={dump_freq})
 dyn.attach(traj.write, interval={dump_freq})
-dyn.run(ramp_steps)
-write("ramp_final.pdb", atoms)
-dyn = NVHugo_SCR(atoms, timestep=timestep,
-                 e0=e0, p0=p0, v0=v0,
-                 tau_t={tau_t},
-                 pmode="{pmode}")
-dyn.attach(MDLogger(dyn, atoms, 'md.log', header=False, stress=True,
-        volume=True, mode="a"), interval={dump_freq})
-dyn.attach(traj.write, interval={dump_freq})
-dyn.run(hug_steps)
+dyn.run()
 write("final.pdb", atoms)
 """
 

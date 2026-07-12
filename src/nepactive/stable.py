@@ -224,9 +224,13 @@ class BaseRun:
         time_step_list = _as_list(init_cfg.get("time_step", 0.2)) or [0.2]
         self.total_time = max(float(steps) * float(time_step) for time_step in time_step_list)
         dump_freq = init_cfg.get("dump_freq", 100)
+        rel_volume_list = _as_list(init_cfg.get("rel_volume", [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]))
+        ramp_steps = int(init_cfg.get("ramp_steps", 10000))
+        hug_steps = int(init_cfg.get("hug_steps", steps))
         if getattr(self, "pot", None) == "mattersim":
             target_frames = 2000
-            balanced_dump_freq = max(1, int(ceil(float(steps) / target_frames)))
+            trajectory_steps = max(int(steps), ramp_steps + hug_steps)
+            balanced_dump_freq = max(1, int(ceil(float(trajectory_steps) / target_frames)))
             old_dump_freq = int(dump_freq)
             dump_freq = max(old_dump_freq, balanced_dump_freq)
             if dump_freq != old_dump_freq:
@@ -238,8 +242,6 @@ class BaseRun:
         tau_p = init_cfg.get("tau_p", 2000)
         elastic_modulus = init_cfg.get("elastic_modulus", 15.0)
         pmode = init_cfg.get("pmode", "iso")
-        rel_volume_list = _as_list(init_cfg.get("rel_volume", [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]))
-        ramp_steps = int(init_cfg.get("ramp_steps", max(1, int(steps) // 2)))
         p0 = getattr(self, 'p0', 0)
         if getattr(self, "pot", None) == "mattersim":
             real_p0 = self.sdata.get("real_p0", False)
@@ -329,6 +331,7 @@ class BaseRun:
                                         v0=self.r_v,
                                         rel_volume=float(rel_volume),
                                         ramp_steps=ramp_steps,
+                                        hug_steps=hug_steps,
                                         dump_freq=dump_freq,
                                         steps=steps,
                                         time_step=time_step_value,

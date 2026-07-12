@@ -757,40 +757,100 @@ class NPH_SCR_Hugo(NPH_SCR):
 
 class NVHugo_SCR(NPT_SCR):
     """
-    Fixed-volume Hugoniot thermostat using the BDP thermostat from NPT_SCR.
-    The cell is kept fixed; the target temperature follows the Hugoniot relation.
+    Two-stage fixed-volume Hugoniot workflow using SCR/BDP integration.
+
+    Stage 1 is an NVT-SCR volume ramp from the current volume to
+    ``rel_volume * v0`` at the requested temperature. Stage 2 keeps
+    the ramped volume fixed and updates the thermostat target from the Hugoniot
+    relation.
     """
 
     def __init__(self, atoms, timestep,
+                 temperature=300.0,
+                 rel_volume=1.0,
+                 ramp_steps=0,
+                 hug_steps=None,
                  e0=None, p0=None, v0=None,
                  tau_t=100.0,
                  pmode='iso', **kwargs):
         self._pmode_hugo = pmode.lower()
+        self.ramp_temperature = float(temperature)
+        self.rel_volume = float(rel_volume)
+        self.ramp_steps = max(0, int(ramp_steps))
+        self.hug_steps = None if hug_steps is None else max(0, int(hug_steps))
+        self.total_stage_steps = (
+            None if self.hug_steps is None else self.ramp_steps + self.hug_steps
+        )
         self.v0 = v0 if v0 is not None else atoms.get_volume()
         self.e0 = e0 if e0 is not None else atoms.get_total_energy()
         if p0 is None:
             self.p0 = -atoms.get_stress(voigt=False).trace() / 3.0
         else:
             self.p0 = p0 * units.GPa
+        self.ramp_target_volume = self.rel_volume * self.v0
+        if self.ramp_steps > 0 and self.ramp_target_volume <= 0:
+            raise ValueError(
+                f"NVHugo_SCR target volume must be positive, got rel_volume={self.rel_volume} "
+                f"and v0={self.v0}"
+            )
         self.tdof = 3 * len(atoms)
         self.dhugo = 0.0
 
-        t_init = max(300.0, atoms.get_temperature()
-                     + _compute_hugoniot(atoms, self.e0, self.p0, self.v0,
-                                         self._pmode_hugo))
         super().__init__(
-            atoms=atoms, timestep=timestep, temperature=t_init,
-            pressure=0.0, tau_t=tau_t, pmode=None, **kwargs)
+            atoms=atoms, timestep=timestep, temperature=self.ramp_temperature,
+            pressure=0.0, tau_t=tau_t, pmode=None,
+            run_steps=max(1, self.ramp_steps) if self.ramp_steps > 0 else None,
+            v_start=1.0,
+            v_stop=self.rel_volume if self.ramp_steps > 0 else None,
+            **kwargs)
+
+        # Anchor the volume ramp to the structure at ensemble construction time.
+        self.initial_cell = atoms.get_cell().array.copy()
+        self.initial_volume = atoms.get_volume()
 
         print(f"NVHugo_SCR: e0={self.e0:.4f} eV, v0={self.v0:.2f} A^3, "
               f"p0={self.p0 / units.GPa:.4f} GPa, pmode={self._pmode_hugo}, "
+              f"temperature={self.ramp_temperature:.1f} K, "
+              f"rel_volume={self.rel_volume:.4f}, ramp_steps={self.ramp_steps}, "
+              f"hug_steps={self.hug_steps}, target_volume={self.ramp_target_volume:.2f} A^3, "
               f"tau_t={tau_t}")
 
+    def _in_ramp_stage(self):
+        return self.nsteps < self.ramp_steps
+
     def _apply_thermostat(self):
+        if self._in_ramp_stage():
+            self.temp_target = self.ramp_temperature
+            super()._apply_thermostat()
+            return
+
         self.dhugo = _compute_hugoniot(
             self.atoms, self.e0, self.p0, self.v0, self._pmode_hugo)
         self.temp_target = max(300.0, self.atoms.get_temperature() + self.dhugo)
         super()._apply_thermostat()
+
+    def _apply_volume_ramp(self):
+        if not self._in_ramp_stage():
+            return
+
+        if self.initial_volume <= 0:
+            return
+
+        progress = min((self.nsteps + 1) / max(1, self.ramp_steps), 1.0)
+        target_volume = self.initial_volume + (
+            self.ramp_target_volume - self.initial_volume
+        ) * progress
+        current_volume = self.atoms.get_volume()
+        if current_volume > 0:
+            scale = (target_volume / current_volume) ** (1.0 / 3.0)
+            self.atoms.set_cell(self.atoms.get_cell().array * scale, scale_atoms=True)
+
+    def run(self, steps=None):
+        if steps is None:
+            if self.total_stage_steps is None:
+                raise ValueError("steps must be given when hug_steps is not configured")
+            steps = self.total_stage_steps
+        return super().run(int(steps))
 
     def get_hugoniot_deviation(self):
         return self.dhugo

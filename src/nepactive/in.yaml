@@ -107,7 +107,8 @@ shock:                         # Hugoniostat 爆速测试设置
   pot: "mattersim"             # shock 阶段独立使用的势函数: "nep"(GPUMD) / "mattersim"
   # ensembles: ["nvhug_scr"]    # MatterSim shock 可用：先 NVT-SCR 线性变体积，再固定体积 Hugoniot
   # rel_volume: [0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
-  # ramp_steps: 50000           # 体积线性变化步数；不填时默认 steps/2
+  # ramp_steps: 10000           # 恒温体积线性变化步数；不填时默认 10000
+  # hug_steps: 50000            # 固定体积 Hugoniot 步数；不填时默认 steps
   # tau_t: 100                 # BDP 恒温器弛豫时间 (默认 100)
   # tau_p: 2000                # SCR 气压计弛豫时间 (默认 2000)
   # pmode: "iso"               # 压力模式 (默认 "iso")
