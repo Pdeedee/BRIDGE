@@ -32,6 +32,7 @@ from nepactive.remote import Remotetask
 from nepactive.nep_backend import create_ase_calculator, get_ase_model_config, resolve_ase_model_path
 from nepactive.sampling import select_structure_indices, select_structure_indices_with_info, split_train_test_structures
 from nepactive.stable import InitRun, ShockRun
+from nepactive.supercell import prepare_poscar
 from nepactive.template import (
     build_gpumd_nphug_ensemble_line,
     build_gpumd_npt_ensemble_line,
@@ -816,6 +817,7 @@ class Nepactive(object):
                 sampling_cfg["structure_id"] = sampling_cfg.get("structure_id", [[0, 1]])
         else:
             self.idata.setdefault("init", {})["struc_num"] = 0
+        prepare_poscar(self.work_dir, enabled=self.idata.get("auto_supercell", True))
         # dlog.info(f"self.idata:{self.idata}")
         # print(f"structure_files: {self.idata['structure_files']}")
             

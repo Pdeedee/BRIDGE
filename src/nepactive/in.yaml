@@ -1,6 +1,7 @@
 project_name: "HMX"                                                   # 项目名称，远程提交任务时会命名为该名字
 yaml_synchro: true                                                    # 执行每个record.nep步骤时是否重新同步文件参数
 
+auto_supercell: True  # 启动时将 POSCAR 扩胞到 100–200 原子，原文件备份为 mv.vasp
 replicate_cell: "1 1 1"
 accuracy: 1                                                           # 爆速测试精度，据此判断是否收敛，若收敛，程序将停止
 ini_engine: "ase"                                                     # 初始动力学数据集获得方法，目前只支持ase

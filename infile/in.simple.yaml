@@ -3,6 +3,7 @@ yaml_synchro: true                                                    # 执行�
 shock_run: false                                                        # 主流程中是否执行 init 与 shock 相关流程
 ini_train_steps: 20000                                                # 第一代训练步数；若主目录下有自定义 nep.in，程序仍会用这个值覆盖 generation
 
+auto_supercell: True  # 启动时将 POSCAR 扩胞到 100–200 原子，原文件备份为 mv.vasp
 # 一定要检查POTCAR的顺序正不正确
 gpu_available: [0,1,2,3]
 structure_files: ["POSCAR"] # 用来跑动力学的初始结构的地址?

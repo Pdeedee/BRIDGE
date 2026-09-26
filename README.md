@@ -98,6 +98,25 @@ project/
 nepactive
 ```
 
+## 自动扩胞
+
+启动主动学习或 `nepactive shock` 时，默认将工作目录中不足 100 个原子的
+`POSCAR` 自动扩胞到 100–200 个原子。程序选择使晶胞边长尽量均衡的整数
+复制倍数，保持元素分组顺序（兼容原 POTCAR），将原文件逐字节备份为
+`mv.vasp`，再将扩胞结果写回 `POSCAR`。后续 `replicate_cell` 仍会额外复制，
+如不需要额外扩胞请保持 `"1 1 1"`。
+
+在 `in.yaml` 顶层可控制此功能（省略时默认开启）：
+
+```yaml
+auto_supercell: True
+```
+
+设置 `auto_supercell: False` 可关闭。已有 100–200 个原子的结构不改写；
+超过 200 个原子时保留原结构并记录警告，不裁剪原子。没有工作目录 POSCAR
+或存在 `record.nep` 的续跑会跳过。若需要扩胞但 `mv.vasp` 已存在，程序会报错，
+请先归档备份或关闭功能，避免覆盖原始结构。重复启动已经扩好的结构不会再扩胞。
+
 ## 运行状态与停止
 
 查看 `nepactive` 进程 PID：
@@ -280,4 +299,3 @@ nep-fps dump.xyz --descriptor nep --model resources/nep89_20250409.txt --pca-plo
 - [src/nepactive/native_nep/README.md](/workplace/liuzf/code/BRIDGE/src/nepactive/native_nep/README.md)
 - [src/nepactive/README_product.md](/workplace/liuzf/code/BRIDGE/src/nepactive/README_product.md)
 - [examples/in_full_config.yaml](/workplace/liuzf/code/BRIDGE/examples/in_full_config.yaml)
-
